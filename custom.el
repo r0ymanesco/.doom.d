@@ -5,7 +5,8 @@
  ;; If there is more than one, they won't work right.
  '(safe-local-variable-values
    (quote
-    ((eval conda-env-activate "pytorch_1_6")
+    ((eval conda-env-activate "pytorch_1_5")
+     (eval conda-env-activate "pytorch_1_6")
      (eval conda-env-activate "pytorch")))))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
