@@ -54,6 +54,7 @@
 
 (require 'magit-todos)
 (magit-todos-mode)
+(ranger-override-dired-mode t)
 
 
 ;; Here are some additional functions/macros that could help you configure Doom:
