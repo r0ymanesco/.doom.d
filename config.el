@@ -32,7 +32,7 @@
 (setq org-directory "~/Dropbox/org")
 (setq org-default-notes-file "~/Dropbox/org/notes.org")
 (setq org-log-done 'time)
-(setq org-agenda-files (list "~/Dropbox/org/notes.org"))
+(setq org-agenda-files (list "~/Dropbox/org"))
 (after! org-capture
   (add-to-list 'org-capture-templates
                '("u" "Quick note" entry
