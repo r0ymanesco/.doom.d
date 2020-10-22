@@ -55,6 +55,9 @@
 (require 'magit-todos)
 (magit-todos-mode)
 (ranger-override-dired-mode t)
+(when (eq system-type 'darwin)
+  (osx-trash-setup))
+(setq delete-by-moving-to-trash t)
 
 
 ;; Here are some additional functions/macros that could help you configure Doom:

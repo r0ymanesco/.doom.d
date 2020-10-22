@@ -11,7 +11,6 @@
 (package! lsp-python-ms :disable t)
 (package! modus-operandi-theme)
 (package! modus-vivendi-theme)
-(disable-packages! osx-trash)
 
 ;; To install a package directly from a remote git repo, you must specify a
 ;; `:recipe'. You'll find documentation on what `:recipe' accepts here:
