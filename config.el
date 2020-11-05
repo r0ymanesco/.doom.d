@@ -25,7 +25,7 @@
 ;; There are two ways to load a theme. Both assume the theme is installed and
 ;; available. You can either set `doom-theme' or manually load a theme with the
 ;; `load-theme' function. This is the default:
-(setq doom-theme 'doom-one)
+(setq doom-theme 'doom-dracula)
 
 ;; If you use `org' and don't want your org files in the default location below,
 ;; change `org-directory'. It must be set before org loads!
@@ -54,11 +54,17 @@
 
 (require 'magit-todos)
 (magit-todos-mode)
-(ranger-override-dired-mode t)
-(when (eq system-type 'darwin)
-  (osx-trash-setup))
-(setq delete-by-moving-to-trash t)
 
+(ranger-override-dired-mode t)
+
+(use-package! osx-trash
+  :config
+  (when (eq system-type 'darwin)
+    (osx-trash-setup))
+  (setq delete-by-moving-to-trash t))
+
+;; (define-key evil-motion-state-map (kbd "C-e") nil)
+;; (define-key smartparens-mode-map (kbd "C-e") #'sp-up-sexp)
 
 ;; Here are some additional functions/macros that could help you configure Doom:
 ;;
