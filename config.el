@@ -57,11 +57,7 @@
 
 (ranger-override-dired-mode t)
 
-(use-package! osx-trash
-  :config
-  (when (eq system-type 'darwin)
-    (osx-trash-setup))
-  (setq delete-by-moving-to-trash t))
+(use-package org-ref)
 
 ;; (define-key evil-motion-state-map (kbd "C-e") nil)
 ;; (define-key smartparens-mode-map (kbd "C-e") #'sp-up-sexp)
