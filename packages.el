@@ -10,6 +10,11 @@
 ;(package! some-package)
 (package! lsp-python-ms :disable t)
 (package! org-ref)
+(package! nord-theme)
+(package! org-zettelkasten)
+(package! zettelkasten)
+(package! org-superstar)
+(package! eglot)
 
 ;; To install a package directly from a remote git repo, you must specify a
 ;; `:recipe'. You'll find documentation on what `:recipe' accepts here:
