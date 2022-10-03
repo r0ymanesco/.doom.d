@@ -57,14 +57,22 @@
                  (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
                  "* %t %?\n%a" :kill-buffer t)
                )
-  )
+)
 (after! org-capture
   (add-to-list 'org-capture-templates
                '("v" "Quick todo" entry
                  (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
                  "* TODO %t %?" :kill-buffer t)
                )
-  )
+)
+(setq org-todo-keywords
+      '(
+        (sequence "TODO(t)" "STRT(s)" "HOLD(h)" "MEETING(m)" "|" "DONE(d)" "KILL(k)")
+        )
+)
+;; (setq org-todo-keyword-faces
+;;       '(("TODO" . "green") ("STRT" . "blue") ("HOLD" . "orange") ("MEETING" . "yellow")
+;;         ("KILL" . "red")))
 (add-hook 'org-mode-hook (lambda () (org-superstar-mode 1)))
 
 
