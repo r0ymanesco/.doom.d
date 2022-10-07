@@ -144,6 +144,28 @@
   )
 
 
+;; Rust
+(add-to-list 'exec-path "~/.cargo/bin")
+
+(with-eval-after-load 'rust-mode
+  (define-key rust-mode-map (kbd "C-c C-r") 'my-cargo-run))
+
+(defun my-cargo-run ()
+  "Build and run Rust code."
+  (interactive)
+  (rustic-cargo-run)
+  (let (
+      (orig-win (selected-window))
+      (run-win (display-buffer (get-buffer "*Cargo Run*") nil 'visible))
+    )
+    (select-window run-win)
+    (comint-mode)
+    (read-only-mode 0)
+    (select-window orig-win)
+  )
+)
+
+
 ;; Tramp
 ;; (use-package anaconda-mode
 ;;   :config
