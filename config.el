@@ -27,7 +27,11 @@
 ;; There are two ways to load a theme. Both assume the theme is installed and
 ;; available. You can either set `doom-theme' or manually load a theme with the
 ;; `load-theme' function. This is the default:
-(setq doom-theme 'doom-one)
+(setq doom-theme 'doom-challenger-deep)
+
+
+;; This fixes the pound key issue on UK MacOs keyboards
+(global-set-key (kbd "M-3") '(lambda () (interactive) (insert "#")))
 
 
 ;; This determines the style of line numbers in effect. If set to `nil', line
@@ -96,7 +100,7 @@
 
 (defun r0ymanesco/incr-id (ident)
   (let* ((ident-list (append nil ident nil))
-	 (last-ident (last ident-list)))
+         (last-ident (last ident-list)))
     (setcar last-ident (+ (car last-ident) 1))
     (concat ident-list)))
 
@@ -107,7 +111,7 @@
 
 (defun r0ymanesco/org-zettelkasten-create (incr newheading)
   (let* ((current-id (org-entry-get nil "CUSTOM_ID"))
-	 (next-id (funcall incr current-id)))
+         (next-id (funcall incr current-id)))
     (funcall newheading)
     (org-set-property "CUSTOM_ID" next-id)))
 
@@ -164,6 +168,32 @@
     (select-window orig-win)
   )
 )
+
+
+;; Elfeed (RSS reader)
+;; data is stored in ~/.elfeed
+;; (global-set-key (kbd "SPC o E") 'elfeed)
+(map! :leader :prefix "o" :desc "Elfeed" "E" 'elfeed)
+(use-package elfeed
+:ensure t
+:bind
+("C-c r" . elfeed-update))
+(setq elfeed-feeds
+      '(
+        ;; programming
+        ;; ("https://www.reddit.com/r/emacs.rss" emacs)
+        ;; ("https://www.reddit.com/r/rust.rss" rust)
+        ;; economics
+        ("https://noahpinion.substack.com/feed" noahpinion)
+        ("https://braddelong.substack.com/feed" braddelong)
+        ("https://theovershoot.co/feed" theovershoot)
+        ;; technology
+        ("theverge.com/rss/index.xml" theverge)
+        ))
+
+(setq-default elfeed-search-filter "@7-days-ago +unread")
+(setq-default elfeed-search-title-max-width 100)
+(setq-default elfeed-search-title-min-width 100)
 
 
 ;; Tramp
