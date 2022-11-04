@@ -187,8 +187,6 @@
         ("https://noahpinion.substack.com/feed" noahpinion)
         ("https://braddelong.substack.com/feed" braddelong)
         ("https://theovershoot.co/feed" theovershoot)
-        ;; technology
-        ("theverge.com/rss/index.xml" theverge)
         ))
 
 (setq-default elfeed-search-filter "@7-days-ago +unread")
