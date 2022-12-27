@@ -55,6 +55,7 @@
 (setq org-default-notes-file "~/Dropbox/org/notes.org")
 (setq org-log-done 'time)
 (setq org-agenda-files (list "~/Dropbox/org"))
+
 (after! org-capture
   (add-to-list 'org-capture-templates
                '("u" "Quick note" entry
@@ -62,6 +63,7 @@
                  "* %t %?\n%a" :kill-buffer t)
                )
 )
+
 (after! org-capture
   (add-to-list 'org-capture-templates
                '("v" "Quick todo" entry
@@ -69,15 +71,26 @@
                  "* TODO %t %?" :kill-buffer t)
                )
 )
+
 (setq org-todo-keywords
       '(
         (sequence "TODO(t)" "STRT(s)" "HOLD(h)" "MEETING(m)" "|" "DONE(d)" "KILL(k)")
+        (sequence "[ ](T)" "[-](S)" "|" "[X](D)")
         )
 )
 ;; (setq org-todo-keyword-faces
 ;;       '(("TODO" . "green") ("STRT" . "blue") ("HOLD" . "orange") ("MEETING" . "yellow")
 ;;         ("KILL" . "red")))
+
 (add-hook 'org-mode-hook (lambda () (org-superstar-mode 1)))
+
+(defun org-summary-todo (n-done n-not-done)
+  "Switch entry to DONE when all subentries are done, to TODO otherwise."
+  (let (org-log-done org-log-states)   ; turn off logging
+    (org-todo (if (= n-not-done 0) "DONE" "TODO"))))
+
+(add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
+;; Source: https://orgmode.org/manual/Breaking-Down-Tasks.html
 
 
 ;; Zettelkasten
@@ -187,6 +200,8 @@
         ("https://noahpinion.substack.com/feed" noahpinion)
         ("https://braddelong.substack.com/feed" braddelong)
         ("https://theovershoot.co/feed" theovershoot)
+        ("https://fallows.substack.com/feed" breakingnews)
+        ("https://www.platformer.news/feed" platformer)
         ))
 
 (setq-default elfeed-search-filter "@7-days-ago +unread")
