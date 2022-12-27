@@ -30,7 +30,7 @@
 (setq doom-theme 'doom-challenger-deep)
 
 
-;; This fixes the pound key issue on UK MacOs keyboards
+;; This fixes the pound key issue on UK MacOS keyboards
 (global-set-key (kbd "M-3") '(lambda () (interactive) (insert "#")))
 
 
@@ -92,6 +92,20 @@
 (add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
 ;; Source: https://orgmode.org/manual/Breaking-Down-Tasks.html
 
+;; (add-hook 'org-mode-hook 'org-fragtog-mode)
+
+(use-package! org-fragtog
+  :after org
+  :hook (org-mode . org-fragtog-mode)
+  )
+
+(use-package! org-appear
+  :after org
+  :hook (org-mode . org-appear-mode)
+  :config (setq
+           org-appear-autolinks t
+           org-appear-autoentities t
+           org-appear-autosubmarkers t ))
 
 ;; Zettelkasten
 (use-package org-zettelkasten
