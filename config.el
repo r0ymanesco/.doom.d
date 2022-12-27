@@ -31,7 +31,7 @@
 
 
 ;; This fixes the pound key issue on UK MacOS keyboards
-(global-set-key (kbd "M-3") '(lambda () (interactive) (insert "#")))
+;; (global-set-key (kbd "M-3") '(lambda () (interactive) (insert "#")))
 
 
 ;; This determines the style of line numbers in effect. If set to `nil', line
@@ -51,128 +51,128 @@
 ;; Org
 ;; If you use `org' and don't want your org files in the default location below,
 ;; change `org-directory'. It must be set before org loads!
-(setq org-directory "~/Dropbox/org")
-(setq org-default-notes-file "~/Dropbox/org/notes.org")
-(setq org-log-done 'time)
-(setq org-agenda-files (list "~/Dropbox/org"))
+;; (setq org-directory "~/Dropbox/org")
+;; (setq org-default-notes-file "~/Dropbox/org/notes.org")
+;; (setq org-log-done 'time)
+;; (setq org-agenda-files (list "~/Dropbox/org"))
 
-(after! org-capture
-  (add-to-list 'org-capture-templates
-               '("u" "Quick note" entry
-                 (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
-                 "* %t %?\n%a" :kill-buffer t)
-               )
-)
+;; (after! org-capture
+;;   (add-to-list 'org-capture-templates
+;;                '("u" "Quick note" entry
+;;                  (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
+;;                  "* %t %?\n%a" :kill-buffer t)
+;;                )
+;; )
 
-(after! org-capture
-  (add-to-list 'org-capture-templates
-               '("v" "Quick todo" entry
-                 (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
-                 "* TODO %t %?" :kill-buffer t)
-               )
-)
+;; (after! org-capture
+;;   (add-to-list 'org-capture-templates
+;;                '("v" "Quick todo" entry
+;;                  (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
+;;                  "* TODO %t %?" :kill-buffer t)
+;;                )
+;; )
 
-(setq org-todo-keywords
-      '(
-        (sequence "TODO(t)" "STRT(s)" "HOLD(h)" "MEETING(m)" "|" "DONE(d)" "KILL(k)")
-        (sequence "[ ](T)" "[-](S)" "|" "[X](D)")
-        )
-)
+;; (setq org-todo-keywords
+;;       '(
+;;         (sequence "TODO(t)" "STRT(s)" "HOLD(h)" "MEETING(m)" "|" "DONE(d)" "KILL(k)")
+;;         (sequence "[ ](T)" "[-](S)" "|" "[X](D)")
+;;         )
+;; )
 ;; (setq org-todo-keyword-faces
 ;;       '(("TODO" . "green") ("STRT" . "blue") ("HOLD" . "orange") ("MEETING" . "yellow")
 ;;         ("KILL" . "red")))
 
-(add-hook 'org-mode-hook (lambda () (org-superstar-mode 1)))
+;; (add-hook 'org-mode-hook (lambda () (org-superstar-mode 1)))
 
-(defun org-summary-todo (n-done n-not-done)
-  "Switch entry to DONE when all subentries are done, to TODO otherwise."
-  (let (org-log-done org-log-states)   ; turn off logging
-    (org-todo (if (= n-not-done 0) "DONE" "TODO"))))
+;; (defun org-summary-todo (n-done n-not-done)
+;;   "Switch entry to DONE when all subentries are done, to TODO otherwise."
+;;   (let (org-log-done org-log-states)   ; turn off logging
+;;     (org-todo (if (= n-not-done 0) "DONE" "TODO"))))
 
-(add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
+;; (add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
 ;; Source: https://orgmode.org/manual/Breaking-Down-Tasks.html
 
 ;; (add-hook 'org-mode-hook 'org-fragtog-mode)
 
-(use-package! org-fragtog
-  :after org
-  :hook (org-mode . org-fragtog-mode)
-  )
+;; (use-package! org-fragtog
+;;   :after org
+;;   :hook (org-mode . org-fragtog-mode)
+;;   )
 
-(use-package! org-appear
-  :after org
-  :hook (org-mode . org-appear-mode)
-  :config (setq
-           org-appear-autolinks t
-           org-appear-autoentities t
-           org-appear-autosubmarkers t ))
+;; (use-package! org-appear
+;;   :after org
+;;   :hook (org-mode . org-appear-mode)
+;;   :config (setq
+;;            org-appear-autolinks t
+;;            org-appear-autoentities t
+;;            org-appear-autosubmarkers t ))
 
 ;; Zettelkasten
-(use-package org-zettelkasten
-  :ensure t
-  :config
-  (add-hook 'org-mode-hook #'org-zettelkasten-mode))
-(setq org-zettelkasten-directory "~/Dropbox/org")
+;; (use-package org-zettelkasten
+;;   :ensure t
+;;   :config
+;;   (add-hook 'org-mode-hook #'org-zettelkasten-mode))
+;; (setq org-zettelkasten-directory "~/Dropbox/org")
 
-(use-package zettelkasten
-  :ensure t
-  :config
-  (zettelkasten-mode t))
+;; (use-package zettelkasten
+;;   :ensure t
+;;   :config
+;;   (zettelkasten-mode t))
 
-(defun org-zettelkasten-search-current-id ()
-    "Use `counsel-rg' to search for the current ID in all files."
-    (interactive)
-    (let ((current-id (org-entry-get nil "CUSTOM_ID")))
-      (counsel-rg (concat "#" current-id) org-zettelkasten-directory "-g *.org" "ID: ")))
+;; (defun org-zettelkasten-search-current-id ()
+;;     "Use `counsel-rg' to search for the current ID in all files."
+;;     (interactive)
+;;     (let ((current-id (org-entry-get nil "CUSTOM_ID")))
+;;       (counsel-rg (concat "#" current-id) org-zettelkasten-directory "-g *.org" "ID: ")))
 
-(defun r0ymanesco/incr-id (ident)
-  (let* ((ident-list (append nil ident nil))
-         (last-ident (last ident-list)))
-    (setcar last-ident (+ (car last-ident) 1))
-    (concat ident-list)))
+;; (defun r0ymanesco/incr-id (ident)
+;;   (let* ((ident-list (append nil ident nil))
+;;          (last-ident (last ident-list)))
+;;     (setcar last-ident (+ (car last-ident) 1))
+;;     (concat ident-list)))
 
-(defun r0ymanesco/branch-id (ident)
-  (if (string-match-p ".*[0-9]$" ident)
-      (concat ident "a")
-    (concat ident "1")))
+;; (defun r0ymanesco/branch-id (ident)
+;;   (if (string-match-p ".*[0-9]$" ident)
+;;       (concat ident "a")
+;;     (concat ident "1")))
 
-(defun r0ymanesco/org-zettelkasten-create (incr newheading)
-  (let* ((current-id (org-entry-get nil "CUSTOM_ID"))
-         (next-id (funcall incr current-id)))
-    (funcall newheading)
-    (org-set-property "CUSTOM_ID" next-id)))
+;; (defun r0ymanesco/org-zettelkasten-create (incr newheading)
+;;   (let* ((current-id (org-entry-get nil "CUSTOM_ID"))
+;;          (next-id (funcall incr current-id)))
+;;     (funcall newheading)
+;;     (org-set-property "CUSTOM_ID" next-id)))
 
-(defun org-zettelkasten-create-heading ()
-  (r0ymanesco/org-zettelkasten-create
-   'r0ymanesco/incr-id 'org-insert-heading))
+;; (defun org-zettelkasten-create-heading ()
+;;   (r0ymanesco/org-zettelkasten-create
+;;    'r0ymanesco/incr-id 'org-insert-heading))
 
-(defun org-zettelkasten-create-subheading ()
-  (r0ymanesco/org-zettelkasten-create
-   'r0ymanesco/branch-id '(lambda () (org-insert-subheading ""))))
+;; (defun org-zettelkasten-create-subheading ()
+;;   (r0ymanesco/org-zettelkasten-create
+;;    'r0ymanesco/branch-id '(lambda () (org-insert-subheading ""))))
 
-(defun org-zettelkasten-create-dwim ()
-  (interactive)
-  (let ((current-point (save-excursion
-                         (org-back-to-heading)
-                         (point)))
-        (next-point (save-excursion
-                      (org-forward-heading-same-level 1 t)
-                      (point))))
-    (if (= current-point next-point)
-        (org-zettelkasten-create-heading)
-        (org-zettelkasten-create-subheading))))
+;; (defun org-zettelkasten-create-dwim ()
+;;   (interactive)
+;;   (let ((current-point (save-excursion
+;;                          (org-back-to-heading)
+;;                          (point)))
+;;         (next-point (save-excursion
+;;                       (org-forward-heading-same-level 1 t)
+;;                       (point))))
+;;     (if (= current-point next-point)
+;;         (org-zettelkasten-create-heading)
+;;         (org-zettelkasten-create-subheading))))
 
 
 ;; Tabs
-(use-package centaur-tabs
-  :config
-  (centaur-tabs-group-by-projectile-project)
-  :bind
-  ("C-c h" . centaur-tabs-backward)
-  ("C-c l" . centaur-tabs-forward)
-  ("C-c d" . centaur-tabs--kill-this-buffer-dont-ask)
-  ("C-c n" . centaur-tabs--create-new-tab)
-  )
+;; (use-package centaur-tabs
+;;   :config
+;;   (centaur-tabs-group-by-projectile-project)
+;;   :bind
+;;   ("C-c h" . centaur-tabs-backward)
+;;   ("C-c l" . centaur-tabs-forward)
+;;   ("C-c d" . centaur-tabs--kill-this-buffer-dont-ask)
+;;   ("C-c n" . centaur-tabs--create-new-tab)
+;;   )
 
 
 ;; Rust
@@ -200,27 +200,27 @@
 ;; Elfeed (RSS reader)
 ;; data is stored in ~/.elfeed
 ;; (global-set-key (kbd "SPC o E") 'elfeed)
-(map! :leader :prefix "o" :desc "Elfeed" "E" 'elfeed)
-(use-package elfeed
-:ensure t
-:bind
-("C-c r" . elfeed-update))
-(setq elfeed-feeds
-      '(
-        ;; programming
-        ;; ("https://www.reddit.com/r/emacs.rss" emacs)
-        ;; ("https://www.reddit.com/r/rust.rss" rust)
-        ;; economics
-        ("https://noahpinion.substack.com/feed" noahpinion)
-        ("https://braddelong.substack.com/feed" braddelong)
-        ("https://theovershoot.co/feed" theovershoot)
-        ("https://fallows.substack.com/feed" breakingnews)
-        ("https://www.platformer.news/feed" platformer)
-        ))
+;; (map! :leader :prefix "o" :desc "Elfeed" "E" 'elfeed)
+;; (use-package elfeed
+;; :ensure t
+;; :bind
+;; ("C-c r" . elfeed-update))
+;; (setq elfeed-feeds
+;;       '(
+;;         ;; programming
+;;         ;; ("https://www.reddit.com/r/emacs.rss" emacs)
+;;         ;; ("https://www.reddit.com/r/rust.rss" rust)
+;;         ;; economics
+;;         ("https://noahpinion.substack.com/feed" noahpinion)
+;;         ("https://braddelong.substack.com/feed" braddelong)
+;;         ("https://theovershoot.co/feed" theovershoot)
+;;         ("https://fallows.substack.com/feed" breakingnews)
+;;         ("https://www.platformer.news/feed" platformer)
+;;         ))
 
-(setq-default elfeed-search-filter "@7-days-ago +unread")
-(setq-default elfeed-search-title-max-width 100)
-(setq-default elfeed-search-title-min-width 100)
+;; (setq-default elfeed-search-filter "@7-days-ago +unread")
+;; (setq-default elfeed-search-title-max-width 100)
+;; (setq-default elfeed-search-title-min-width 100)
 
 
 ;; Tramp
