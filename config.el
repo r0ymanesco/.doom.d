@@ -233,6 +233,8 @@
 
 ;; ssh-deploy
 ;; - prefix = C-c C-z, f = forced upload, u = upload, d = download, x = diff, t = terminal, b = browse, h = shell
+;; NOTE: hydra bindings don't work
+;; Need to setup passwordless copy to remote and project .dir-locals.el config
 (use-package ssh-deploy
         :ensure t
         :demand
