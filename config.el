@@ -39,6 +39,14 @@
 (setq display-line-numbers-type t)
 
 
+;; conda
+(require 'conda)
+;; if you want interactive shell support, include:
+(conda-env-initialize-interactive-shells)
+(custom-set-variables
+ '(conda-anaconda-home "~/miniconda3/"))
+
+
 ;; Magit
 (require 'magit-todos)
 (magit-todos-mode)
@@ -221,6 +229,21 @@
 (setq-default elfeed-search-filter "@7-days-ago +unread")
 (setq-default elfeed-search-title-max-width 100)
 (setq-default elfeed-search-title-min-width 100)
+
+
+;; ssh-deploy
+;; - prefix = C-c C-z, f = forced upload, u = upload, d = download, x = diff, t = terminal, b = browse, h = shell
+(use-package ssh-deploy
+        :ensure t
+        :demand
+        :after hydra
+        :hook ((after-save . ssh-deploy-after-save)
+               (find-file . ssh-deploy-find-file))
+        :config
+        (ssh-deploy-line-mode) ;; If you want mode-line feature
+        (ssh-deploy-add-menu) ;; If you want menu-bar feature
+        (ssh-deploy-hydra "C-c C-z") ;; If you want the hydra feature
+      )
 
 
 ;; Tramp
