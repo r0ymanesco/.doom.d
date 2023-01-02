@@ -311,8 +311,8 @@
 ;; Rust
 (add-to-list 'exec-path "~/.cargo/bin")
 
-(with-eval-after-load 'rust-mode
-  (define-key rust-mode-map (kbd "C-c C-r") 'my-cargo-run))
+;; (with-eval-after-load 'rust-mode
+;;   (define-key rust-mode-map (kbd "C-c C-r") 'my-cargo-run))
 
 ;; custom method to allow keyboard input
 ;; doesn't work...
