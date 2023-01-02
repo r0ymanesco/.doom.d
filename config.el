@@ -115,7 +115,7 @@
            org-appear-autosubmarkers t))
 
 
-;; eBib
+;; Ebib
 (use-package ebib
 :bind (("C-c e" . ebib))
 :ensure t
@@ -155,13 +155,13 @@
 ;;       '(("pdf" . "open -a Skim %s")))
 
 (require 'ebib-biblio)
+(with-eval-after-load 'biblio
+  (define-key biblio-selection-mode-map (kbd "e") #'ebib-biblio-selection-import))
 ;; (with-eval-after-load 'ebib
 ;;   (define-key ebib-index-mode-map (kbd "B") 'ebib-biblio-import-doi)
 ;;   (define-key ebib-index-mode-map (kbd "F f") 'ebib-import-file)
 ;;   (define-key ebib-index-mode-map (kbd "C-x S") 'ebib-edit-strings)
 ;;   (define-key ebib-strings-mode-map (kbd "C-x a") 'ebib-add-string))
-(with-eval-after-load 'biblio
-  (define-key biblio-selection-mode-map (kbd "e") #'ebib-biblio-selection-import))
 
 ;; (defun acm-pdf-url (doi)
 ;;   "Retrieve a DOI pdf from the ACM."
