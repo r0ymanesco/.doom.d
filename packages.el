@@ -20,6 +20,8 @@
 (package! elfeed-web)
 (package! org-fragtog)
 (package! org-appear)
+(package! ebib)
+(package! biblio)
 ;;(package! emacs-highlight-indent-guides)
 
 ;; To install a package directly from a remote git repo, you must specify a

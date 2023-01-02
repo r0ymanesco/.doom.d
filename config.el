@@ -62,7 +62,7 @@
 (setq org-directory "~/Dropbox/org")
 (setq org-default-notes-file "~/Dropbox/org/notes.org")
 (setq org-log-done 'time)
-(setq org-agenda-files (list "~/Dropbox/org"))
+(setq org-agenda-files (list "~/Dropbox/org" "~/Dropbox/org/bibliography/notes" "~/Dropbox/org/bibliography"))
 
 (after! org-capture
   (add-to-list 'org-capture-templates
@@ -82,7 +82,7 @@
 
 (setq org-todo-keywords
       '(
-        (sequence "TODO(t)" "STRT(s)" "HOLD(h)" "MEETING(m)" "|" "DONE(d)" "KILL(k)")
+        (sequence "TODO(t)" "STRT(s)" "HOLD(h)" "MEETING(m)" "READ(r)" "|" "DONE(d)" "KILL(k)")
         (sequence "[ ](T)" "[-](S)" "|" "[X](D)")
         )
 )
@@ -92,6 +92,7 @@
 
 (add-hook 'org-mode-hook (lambda () (org-superstar-mode 1)))
 
+;; doesn't work for checkboxes
 (defun org-summary-todo (n-done n-not-done)
   "Switch entry to DONE when all subentries are done, to TODO otherwise."
   (let (org-log-done org-log-states)   ; turn off logging
@@ -99,8 +100,6 @@
 
 (add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
 ;; Source: https://orgmode.org/manual/Breaking-Down-Tasks.html
-
-;; (add-hook 'org-mode-hook 'org-fragtog-mode)
 
 (use-package! org-fragtog
   :after org
@@ -113,7 +112,128 @@
   :config (setq
            org-appear-autolinks t
            org-appear-autoentities t
-           org-appear-autosubmarkers t ))
+           org-appear-autosubmarkers t))
+
+
+;; eBib
+(use-package ebib
+:bind (("C-c e" . ebib))
+:ensure t
+:config
+(setq ebib-index-columns
+(quote(
+("Entry Key" 30 t)
+("Author/Editor" 20 nil)
+("Year" 6 t)
+("Title" 60 t)
+("keywords" 20 t))))
+(setq ebib-bibtex-dialect 'biblatex)
+(setq ebib-preload-bib-files '("~/Dropbox/org/bibliography/bib/main.bib"))
+(setq ebib-file-search-dirs '("~/Sync/papers/pdf"))
+(setq ebib-notes-directory "~/Dropbox/org/bibliography/notes")
+(setq ebib-use-timestamp t)
+(setq ebib-timestamp-format "%d.%m.%Y")
+(setq ebib-index-window-size 50)
+(setq ebib-reading-list-file "~/Dropbox/org/bibliography/reading_list.org")
+(setq ebib-reading-list-todo-marker "READ")
+(if (eq system-type 'darwin)
+      (add-to-list 'ebib-file-associations '("pdf" . "open -a Skim %s"))
+      (add-to-list 'ebib-file-associations '("pdf" . nil)))
+(advice-add 'bibtex-generate-autokey :around
+              (lambda (orig-func &rest args)
+                (replace-regexp-in-string ":" "" (apply orig-func args)))))
+;; (setq ebib-window-vertical-split t)
+;; (setq ebib-file-associations
+;;       '(("pdf" . "open -a Skim %s")))
+
+(require 'ebib-biblio)
+
+(with-eval-after-load 'ebib
+  (define-key ebib-index-mode-map (kbd "B") #'ebib-biblio-import-doi)
+  (define-key ebib-index-mode-map (kbd "F f") #'ebib-import-file)
+  (define-key ebib-index-mode-map (kbd "C-x S") #'ebib-edit-strings)
+  (define-key ebib-strings-mode-map (kbd "C-x a") #'ebib-add-string))
+
+(with-eval-after-load 'biblio
+  (define-key biblio-selection-mode-map (kbd "e") #'ebib-biblio-selection-import))
+
+;; (defun acm-pdf-url (doi)
+;;   "Retrieve a DOI pdf from the ACM."
+;;   (concat "https://dl.acm.org/doi/pdf/" doi))
+
+;; (defun ieee-pdf-url (doi)
+;;   "Retrieve a DOI pdf from the IEEE."
+;;   (when (string-match "\\.\\([0-9]*\\)$" doi)
+;;     (let ((doi-bit (match-string 1 doi)))
+;;       (concat "https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber=" doi-bit "&ref="))))
+
+;; (defun springer-pdf-url (doi)
+;;   "Retrieve a DOI pdf from the Springer."
+;;   (concat "https://link.springer.com/content/pdf/" doi ".pdf"))
+
+;; (defun arxiv-pdf-url (eprint)
+;;   "Download an arXiv pdf based on it's EPRINT number."
+;;   (concat "https://arxiv.org/pdf/" eprint ".pdf"))
+
+;; (defun download-pdf-from-doi (key &optional doi publisher eprint journal organization url)
+;;   "Download pdf from DOI with KEY name."
+;;   (let ((pub  (or publisher ""))
+;;         (epr  (or eprint ""))
+;;         (jour (or journal ""))
+;;         (org  (or organization ""))
+;;         (link (or url "")))
+;;     (url-copy-file (cond
+;;                     ((not doi) link)
+;;                     ((or (string-match "ACM" (s-upcase pub))
+;;                          (string-match "association for computing machinery" (s-downcase pub)))
+;;                      (acm-pdf-url doi))
+;;                     ((string-match "arxiv" (s-downcase pub))
+;;                      (arxiv-pdf-url epr))
+;;                     ((or (string-match "IEEE" (s-upcase pub))
+;;                          (string-match "IEEE" (s-upcase jour))
+;;                          (string-match "IEEE" (s-upcase org)))
+;;                      (ieee-pdf-url doi))
+;;                     ((string-match "springer" (s-downcase pub))
+;;                      (springer-pdf-url doi))
+;;                     (t (error "Cannot possibly find the PDF any other way")))
+;;                    (concat (car ebib-file-search-dirs) "/" key ".pdf"))))
+
+;; (defun download-pdf-from-link (link key)
+;;   (url-copy-file link
+;;                  (concat (car ebib-file-search-dirs) "/" key ".pdf")))
+
+;; (defun download-pdf-from-downloads (key)
+;;   (copy-file (concat "~/Downloads/" key ".pdf")
+;;              (concat (car ebib-file-search-dirs) "/" key ".pdf") t))
+
+;; (defun get-bib-from-doi (doi)
+;;   "Get the bibtex from DOI."
+;;   (shell-command (concat "curl -L -H \"Accept: application/x-bibtex; charset=utf-8\" "
+;;                          "https://doi.org/" doi)))
+
+;; (defun ebib-download-pdf-from-doi ()
+;;   "Download a PDF for the current entry."
+;;   (interactive)
+;;   (let* ((key (ebib--get-key-at-point))
+;;          (doi (ebib-get-field-value "doi" key ebib--cur-db 'noerror 'unbraced 'xref))
+;;          (publisher (ebib-get-field-value "publisher" key ebib--cur-db 'noerror 'unbraced 'xref))
+;;          (eprinttype (ebib-get-field-value "eprinttype" key ebib--cur-db 'noerror 'unbraced 'xref))
+;;          (eprint (ebib-get-field-value "eprint" key ebib--cur-db 'noerror 'unbraced 'xref))
+;;          (journal (ebib-get-field-value "journal" key ebib--cur-db 'noerror 'unbraced 'xref))
+;;          (journaltitle (ebib-get-field-value "journaltitle" key ebib--cur-db 'noerror 'unbraced 'xref))
+;;          (organization (ebib-get-field-value "organization" key ebib--cur-db 'noerror 'unbraced 'xref))
+;;          (url (ebib-get-field-value "url" key ebib--cur-db 'noerror 'unbraced 'xref)))
+;;     (unless key
+;;       (error "[Ebib] No key assigned to entry"))
+;;     (download-pdf-from-doi key doi (or publisher eprinttype) eprint (or journal journaltitle) organization url)))
+
+;; (defun ebib-check-file ()
+;;   "Download a PDF for the current entry."
+;;   (interactive)
+;;   (let ((key (ebib--get-key-at-point)))
+;;     (unless (file-exists-p (concat (car ebib-file-search-dirs) "/" key ".pdf"))
+;;       (error "[Ebib] No PDF found"))))
+
 
 ;; Zettelkasten
 (use-package org-zettelkasten
@@ -189,6 +309,8 @@
 (with-eval-after-load 'rust-mode
   (define-key rust-mode-map (kbd "C-c C-r") 'my-cargo-run))
 
+;; custom method to allow keyboard input
+;; doesn't work...
 (defun my-cargo-run ()
   "Build and run Rust code."
   (interactive)
@@ -237,14 +359,11 @@
 ;; Need to setup passwordless copy to remote and project .dir-locals.el config
 (use-package ssh-deploy
         :ensure t
-        :demand
-        :after hydra
         :hook ((after-save . ssh-deploy-after-save)
                (find-file . ssh-deploy-find-file))
         :config
         (ssh-deploy-line-mode) ;; If you want mode-line feature
         (ssh-deploy-add-menu) ;; If you want menu-bar feature
-        (ssh-deploy-hydra "C-c C-z") ;; If you want the hydra feature
       )
 
 
