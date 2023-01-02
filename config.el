@@ -148,8 +148,7 @@
 (map! :map ebib-index-mode-map "B" #'ebib-biblio-import-doi)
 (map! :map ebib-index-mode-map "F f" #'ebib-import-file)
 (map! :map ebib-index-mode-map "C-x S" #'ebib-edit-strings)
-(map! :map ebib-strings-mode-map "C-x a" #'ebib-add-string)
-)
+(map! :map ebib-strings-mode-map "C-x a" #'ebib-add-string))
 ;; (setq ebib-window-vertical-split t)
 ;; (setq ebib-file-associations
 ;;       '(("pdf" . "open -a Skim %s")))
