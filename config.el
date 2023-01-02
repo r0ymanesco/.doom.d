@@ -134,6 +134,9 @@
 (setq ebib-use-timestamp t)
 (setq ebib-timestamp-format "%d.%m.%Y")
 (setq ebib-index-window-size 50)
+(setq ebib-keywords (expand-file-name "~/Dropbox/org/bibliography/keywords.txt"))
+(setq ebib-keywords-add-new-to-canonical 0)
+(setq ebib-keywords-save-on-exit t)
 (setq ebib-reading-list-file "~/Dropbox/org/bibliography/reading_list.org")
 (setq ebib-reading-list-todo-marker "READ")
 (if (eq system-type 'darwin)
@@ -149,10 +152,10 @@
 (require 'ebib-biblio)
 
 (with-eval-after-load 'ebib
-  (define-key ebib-index-mode-map (kbd "B") #'ebib-biblio-import-doi)
-  (define-key ebib-index-mode-map (kbd "F f") #'ebib-import-file)
-  (define-key ebib-index-mode-map (kbd "C-x S") #'ebib-edit-strings)
-  (define-key ebib-strings-mode-map (kbd "C-x a") #'ebib-add-string))
+  (define-key ebib-index-mode-map (kbd "B") 'ebib-biblio-import-doi)
+  (define-key ebib-index-mode-map (kbd "F f") 'ebib-import-file)
+  (define-key ebib-index-mode-map (kbd "C-x S") 'ebib-edit-strings)
+  (define-key ebib-strings-mode-map (kbd "C-x a") 'ebib-add-string))
 
 (with-eval-after-load 'biblio
   (define-key biblio-selection-mode-map (kbd "e") #'ebib-biblio-selection-import))
