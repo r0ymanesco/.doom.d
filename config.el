@@ -127,36 +127,39 @@
 ("Year" 6 t)
 ("Title" 60 t)
 ("keywords" 20 t))))
-(setq ebib-bibtex-dialect 'biblatex)
-(setq ebib-preload-bib-files '("~/Dropbox/org/bibliography/bib/main.bib"))
-(setq ebib-file-search-dirs '("~/Sync/papers/pdf"))
-(setq ebib-notes-directory "~/Dropbox/org/bibliography/notes")
-(setq ebib-use-timestamp t)
-(setq ebib-timestamp-format "%d.%m.%Y")
-(setq ebib-index-window-size 50)
-(setq ebib-keywords (expand-file-name "~/Dropbox/org/bibliography/keywords.txt"))
-(setq ebib-keywords-add-new-to-canonical 0)
-(setq ebib-keywords-save-on-exit t)
-(setq ebib-reading-list-file "~/Dropbox/org/bibliography/reading_list.org")
-(setq ebib-reading-list-todo-marker "READ")
+(setq ebib-bibtex-dialect 'biblatex
+      ebib-preload-bib-files '("~/Dropbox/org/bibliography/bib/main.bib")
+      ebib-file-search-dirs '("~/Sync/papers/pdf")
+      ebib-notes-directory "~/Dropbox/org/bibliography/notes"
+      ebib-use-timestamp t
+      ebib-timestamp-format "%d.%m.%Y"
+      ebib-index-window-size 50
+      ebib-keywords (expand-file-name "~/Dropbox/org/bibliography/keywords.txt")
+      ebib-keywords-add-new-to-canonical 0
+      ebib-keywords-save-on-exit t
+      ebib-reading-list-file "~/Dropbox/org/bibliography/reading_list.org"
+      ebib-reading-list-todo-marker "READ")
 (if (eq system-type 'darwin)
-      (add-to-list 'ebib-file-associations '("pdf" . "open -a Skim %s"))
-      (add-to-list 'ebib-file-associations '("pdf" . nil)))
+        (add-to-list 'ebib-file-associations '("pdf" . "open -a Skim %s"))
+        (add-to-list 'ebib-file-associations '("pdf" . nil)))
 (advice-add 'bibtex-generate-autokey :around
               (lambda (orig-func &rest args)
-                (replace-regexp-in-string ":" "" (apply orig-func args)))))
+                (replace-regexp-in-string ":" "" (apply orig-func args))))
+(map! :map ebib-index-mode-map "B" #'ebib-biblio-import-doi)
+(map! :map ebib-index-mode-map "F f" #'ebib-import-file)
+(map! :map ebib-index-mode-map "C-x S" #'ebib-edit-strings)
+(map! :map ebib-strings-mode-map "C-x a" #'ebib-add-string)
+)
 ;; (setq ebib-window-vertical-split t)
 ;; (setq ebib-file-associations
 ;;       '(("pdf" . "open -a Skim %s")))
 
 (require 'ebib-biblio)
-
-(with-eval-after-load 'ebib
-  (define-key ebib-index-mode-map (kbd "B") 'ebib-biblio-import-doi)
-  (define-key ebib-index-mode-map (kbd "F f") 'ebib-import-file)
-  (define-key ebib-index-mode-map (kbd "C-x S") 'ebib-edit-strings)
-  (define-key ebib-strings-mode-map (kbd "C-x a") 'ebib-add-string))
-
+;; (with-eval-after-load 'ebib
+;;   (define-key ebib-index-mode-map (kbd "B") 'ebib-biblio-import-doi)
+;;   (define-key ebib-index-mode-map (kbd "F f") 'ebib-import-file)
+;;   (define-key ebib-index-mode-map (kbd "C-x S") 'ebib-edit-strings)
+;;   (define-key ebib-strings-mode-map (kbd "C-x a") 'ebib-add-string))
 (with-eval-after-load 'biblio
   (define-key biblio-selection-mode-map (kbd "e") #'ebib-biblio-selection-import))
 
