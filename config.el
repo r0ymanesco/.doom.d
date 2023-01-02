@@ -116,8 +116,9 @@
 
 
 ;; Ebib
+(map! :leader :prefix "o" :desc "Ebib" "B" 'ebib)
 (use-package ebib
-:bind (("C-c e" . ebib))
+;; :bind (("C-c e" . ebib))
 :ensure t
 :config
 (setq ebib-index-columns
@@ -157,10 +158,10 @@
 (with-eval-after-load 'biblio
   (define-key biblio-selection-mode-map (kbd "e") #'ebib-biblio-selection-import))
 ;; (with-eval-after-load 'ebib
-;;   (define-key ebib-index-mode-map (kbd "B") 'ebib-biblio-import-doi)
-;;   (define-key ebib-index-mode-map (kbd "F f") 'ebib-import-file)
-;;   (define-key ebib-index-mode-map (kbd "C-x S") 'ebib-edit-strings)
-;;   (define-key ebib-strings-mode-map (kbd "C-x a") 'ebib-add-string))
+;;   (define-key ebib-index-mode-map (kbd "B") #'ebib-biblio-import-doi)
+;;   (define-key ebib-index-mode-map (kbd "F f") #'ebib-import-file)
+;;   (define-key ebib-index-mode-map (kbd "C-x S") #'ebib-edit-strings)
+;;   (define-key ebib-strings-mode-map (kbd "C-x a") #'ebib-add-string))
 
 ;; (defun acm-pdf-url (doi)
 ;;   "Retrieve a DOI pdf from the ACM."
@@ -360,8 +361,8 @@
 
 ;; ssh-deploy
 ;; - prefix = C-c C-z, f = forced upload, u = upload, d = download, x = diff, t = terminal, b = browse, h = shell
-;; NOTE: hydra bindings don't work
 ;; Need to setup passwordless copy to remote and project .dir-locals.el config
+;; NOTE: hydra bindings don't work
 ;; NOTE: removed after-save hook to avoid non-project save errors, seems to work w/o. add back if problems occur
 (use-package ssh-deploy
        :ensure t
@@ -369,8 +370,7 @@
               ;; (after-save . ssh-deploy-after-save)
        :config
        (ssh-deploy-line-mode) ;; If you want mode-line feature
-       (ssh-deploy-add-menu) ;; If you want menu-bar feature
-     )
+       (ssh-deploy-add-menu)) ;; If you want menu-bar feature
 
 
 ;; Tramp
