@@ -362,14 +362,21 @@
 ;; - prefix = C-c C-z, f = forced upload, u = upload, d = download, x = diff, t = terminal, b = browse, h = shell
 ;; NOTE: hydra bindings don't work
 ;; Need to setup passwordless copy to remote and project .dir-locals.el config
-(use-package ssh-deploy
-        :ensure t
-        :hook ((after-save . ssh-deploy-after-save)
-               (find-file . ssh-deploy-find-file))
-        :config
-        (ssh-deploy-line-mode) ;; If you want mode-line feature
-        (ssh-deploy-add-menu) ;; If you want menu-bar feature
-      )
+;; (ssh-deploy-line-mode) ;; If you want mode-line feature
+;; (ssh-deploy-add-menu) ;; If you want menu-bar feature
+;; (ssh-deploy-add-after-save-hook) ;; If you want automatic upload support
+;; (ssh-deploy-add-find-file-hook) ;; If you want detecting remote changes support
+;; (global-set-key (kbd "C-c C-z") 'ssh-deploy-prefix-map)
+
+;;
+;;(use-package ssh-deploy
+;;        :ensure t
+;;        :hook ((after-save . ssh-deploy-after-save)
+;;               (find-file . ssh-deploy-find-file))
+;;        :config
+;;        (ssh-deploy-line-mode) ;; If you want mode-line feature
+;;        (ssh-deploy-add-menu) ;; If you want menu-bar feature
+;;      )
 
 
 ;; Tramp
