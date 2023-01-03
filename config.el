@@ -99,6 +99,7 @@
     (org-todo (if (= n-not-done 0) "DONE" "TODO"))))
 
 (add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
+(add-hook 'org-after-todo-state-change-hook 'save-buffer)
 ;; Source: https://orgmode.org/manual/Breaking-Down-Tasks.html
 
 (use-package! org-fragtog
@@ -149,6 +150,7 @@
 (map! :map ebib-index-mode-map "B" #'ebib-biblio-import-doi)
 (map! :map ebib-index-mode-map "F f" #'ebib-import-file)
 (map! :map ebib-index-mode-map "C-x S" #'ebib-edit-strings)
+(map! :map ebib-index-mode-map "C-x B" #'biblio-lookup)
 (map! :map ebib-strings-mode-map "C-x a" #'ebib-add-string))
 ;; (setq ebib-window-vertical-split t)
 ;; (setq ebib-file-associations
