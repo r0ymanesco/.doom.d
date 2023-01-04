@@ -54,6 +54,7 @@
 
 ;; Ranger
 (ranger-override-dired-mode t)
+(map! :leader :prefix "o" :desc "ranger" "D" 'ranger)
 
 
 ;; Org
@@ -62,23 +63,25 @@
 (setq org-directory "~/Dropbox/org")
 (setq org-default-notes-file "~/Dropbox/org/notes.org")
 (setq org-log-done 'time)
-(setq org-agenda-files (list "~/Dropbox/org" "~/Dropbox/org/bibliography/notes" "~/Dropbox/org/bibliography"))
+(setq org-agenda-files (list "~/Dropbox/org/bibliography/notes" "~/Dropbox/org/notebook/journal"))
+(setq org-id-extra-files (directory-files-recursively "~/Dropbox/org/notebook/notes/org-content" "org"))
+(setq org-id-extra-files (directory-files-recursively "~/Dropbox/org/bibliography/notes" "org"))
 
-(after! org-capture
-  (add-to-list 'org-capture-templates
-               '("u" "Quick note" entry
-                 (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
-                 "* %t %?\n%a" :kill-buffer t)
-               )
-)
+;; (after! org-capture
+;;   (add-to-list 'org-capture-templates
+;;                '("u" "Quick note" entry
+;;                  (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
+;;                  "* %t %?\n%a" :kill-buffer t)
+;;                )
+;; )
 
-(after! org-capture
-  (add-to-list 'org-capture-templates
-               '("v" "Quick todo" entry
-                 (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
-                 "* TODO %t %?" :kill-buffer t)
-               )
-)
+;; (after! org-capture
+;;   (add-to-list 'org-capture-templates
+;;                '("v" "Quick todo" entry
+;;                  (file+headline "~/Dropbox/org/notes.org" "Quick Notes")
+;;                  "* TODO %t %?" :kill-buffer t)
+;;                )
+;; )
 
 (setq org-todo-keywords
       '(
@@ -99,7 +102,8 @@
     (org-todo (if (= n-not-done 0) "DONE" "TODO"))))
 
 (add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
-(add-hook 'org-after-todo-state-change-hook 'save-buffer)
+(add-hook 'org-trigger-hook 'save-buffer)
+;; (add-hook 'org-after-todo-state-change-hook 'save-buffer) -> doesn't actually save the file for some reason
 ;; Source: https://orgmode.org/manual/Breaking-Down-Tasks.html
 
 (use-package! org-fragtog
@@ -114,6 +118,11 @@
            org-appear-autolinks t
            org-appear-autoentities t
            org-appear-autosubmarkers t))
+
+
+;; ox-hugo
+(with-eval-after-load 'org
+  (map! :desc "org-hugo-export-wim-to-md" "C-c H" 'org-hugo-export-wim-to-md))
 
 
 ;; Ebib
@@ -139,7 +148,7 @@
       ebib-keywords (expand-file-name "~/Dropbox/org/bibliography/keywords.txt")
       ebib-keywords-add-new-to-canonical 0
       ebib-keywords-save-on-exit t
-      ebib-reading-list-file "~/Dropbox/org/bibliography/reading_list.org"
+      ebib-reading-list-file "~/Dropbox/org/notebook/journal/reading_list.org"
       ebib-reading-list-todo-marker "READ")
 (if (eq system-type 'darwin)
         (add-to-list 'ebib-file-associations '("pdf" . "open -a Skim %s"))
