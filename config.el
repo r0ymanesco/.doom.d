@@ -61,10 +61,10 @@
 ;; If you use `org' and don't want your org files in the default location below,
 ;; change `org-directory'. It must be set before org loads!
 (setq org-directory "~/Dropbox/org")
-(setq org-default-notes-file "~/Dropbox/org/notes.org")
+;; (setq org-default-notes-file "~/Dropbox/org/notes.org")
 (setq org-log-done 'time)
-(setq org-agenda-files (list "~/Dropbox/org/bibliography/notes" "~/Dropbox/org/notebook/journal"))
-(setq org-id-extra-files (directory-files-recursively "~/Dropbox/org/notebook/notes/org-content" "org"))
+(setq org-agenda-files (list "~/Dropbox/org/notebook/journal"))
+(setq org-id-extra-files (directory-files-recursively "~/Dropbox/org/notebook/notes" "org"))
 (setq org-id-extra-files (directory-files-recursively "~/Dropbox/org/bibliography/notes" "org"))
 
 ;; (after! org-capture
@@ -103,6 +103,13 @@
 
 (add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
 (add-hook 'org-trigger-hook 'save-buffer)
+
+(defmacro ignore-args (fnc)
+  "Return function that ignores its arguments and invokes FNC."
+  `(lambda (&rest _rest)
+     (funcall ,fnc)))
+(advice-add 'org-schedule :after (ignore-args #'org-save-all-org-buffers))
+
 ;; (add-hook 'org-after-todo-state-change-hook 'save-buffer) -> doesn't actually save the file for some reason
 ;; Source: https://orgmode.org/manual/Breaking-Down-Tasks.html
 
@@ -151,7 +158,7 @@
       ebib-reading-list-file "~/Dropbox/org/notebook/journal/reading_list.org"
       ebib-reading-list-todo-marker "READ")
 (if (eq system-type 'darwin)
-        (add-to-list 'ebib-file-associations '("pdf" . "open -a Skim %s"))
+        (add-to-list 'ebib-file-associations '("pdf" . "open %s"))
         (add-to-list 'ebib-file-associations '("pdf" . nil)))
 (advice-add 'bibtex-generate-autokey :around
               (lambda (orig-func &rest args)
