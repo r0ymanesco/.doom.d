@@ -48,7 +48,15 @@
     (cons 320 "#80565d")
     (cons 340 "#6272a4")
     (cons 360 "#6272a4")))
- '(vc-annotate-very-old-color nil))
+ '(vc-annotate-very-old-color nil)
+ '(warning-suppress-types
+   '((magit-todos)
+     (magit-todos)
+     (magit-todos)
+     (magit-todos)
+     (magit-todos)
+     (magit-todos)
+     (defvaralias))))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
  ;; If you edit it by hand, you could mess it up, so be careful.

@@ -47,6 +47,14 @@
  '(conda-anaconda-home "~/miniconda3/"))
 
 
+;; poetry
+(use-package poetry
+ :ensure t
+ :config
+ (setq poetry-tracking-model t))
+(map! :leader :prefix "p" :desc "poetry" "P" 'poetry)
+
+
 ;; Magit
 (require 'magit-todos)
 (magit-todos-mode)
@@ -131,6 +139,11 @@
 (with-eval-after-load 'org
   (map! :desc "org-hugo-export-wim-to-md" "C-c H" 'org-hugo-export-wim-to-md))
 
+
+;; latex
+(latex-preview-pane-enable)
+;; (setq TeX-auto-save t)
+;; (setq TeX-parse-self t)
 
 ;; Ebib
 (map! :leader :prefix "o" :desc "Ebib" "B" 'ebib)

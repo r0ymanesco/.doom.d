@@ -23,6 +23,7 @@
 (package! ebib)
 (package! biblio)
 (package! ox-hugo)
+(package! poetry)
 ;;(package! emacs-highlight-indent-guides)
 
 ;; To install a package directly from a remote git repo, you must specify a
