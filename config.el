@@ -60,6 +60,22 @@
 (magit-todos-mode)
 
 
+;; Aidermacs
+(use-package aidermacs
+  :bind (("C-c a" . aidermacs-transient-menu))
+  :config
+  ; Set API_KEY in .bashrc, that will automatically picked up by aider or in elisp
+  (setenv "API_KEY" "sk-...")
+  :custom
+  ; See the Configuration section below
+  (aidermacs-use-architect-mode t)
+  (aidermacs-default-model "openrouter/anthropic/claude-3.7-sonnet")
+  (aidermacs-architect-model "openrouter/anthropic/claude-3.7-sonnet:thinking")
+  (aidermacs-editor-model "openrouter/anthropic/claude-3.7-sonnet")
+  (aidermacs-weak-model "openrouter/google/gemini-2.5-flash-preview")
+  )
+
+
 ;; Ranger
 (ranger-override-dired-mode t)
 (map! :leader :prefix "o" :desc "ranger" "D" 'ranger)
@@ -141,7 +157,7 @@
 
 
 ;; latex
-(latex-preview-pane-enable)
+;; (latex-preview-pane-enable)
 ;; (setq TeX-auto-save t)
 ;; (setq TeX-parse-self t)
 
@@ -273,59 +289,59 @@
 
 
 ;; Zettelkasten
-(use-package org-zettelkasten
-  :ensure t
-  :config
-  (add-hook 'org-mode-hook #'org-zettelkasten-mode))
-(setq org-zettelkasten-directory "~/Dropbox/org")
+;; (use-package org-zettelkasten
+;;   :ensure t
+;;   :config
+;;   (add-hook 'org-mode-hook #'org-zettelkasten-mode))
+;; (setq org-zettelkasten-directory "~/Dropbox/org")
 
-(use-package zettelkasten
-  :ensure t
-  :config
-  (zettelkasten-mode t))
+;; (use-package zettelkasten
+;;   :ensure t
+;;   :config
+;;   (zettelkasten-mode t))
 
-(defun org-zettelkasten-search-current-id ()
-    "Use `counsel-rg' to search for the current ID in all files."
-    (interactive)
-    (let ((current-id (org-entry-get nil "CUSTOM_ID")))
-      (counsel-rg (concat "#" current-id) org-zettelkasten-directory "-g *.org" "ID: ")))
+;; (defun org-zettelkasten-search-current-id ()
+;;     "Use `counsel-rg' to search for the current ID in all files."
+;;     (interactive)
+;;     (let ((current-id (org-entry-get nil "CUSTOM_ID")))
+;;       (counsel-rg (concat "#" current-id) org-zettelkasten-directory "-g *.org" "ID: ")))
 
-(defun r0ymanesco/incr-id (ident)
-  (let* ((ident-list (append nil ident nil))
-         (last-ident (last ident-list)))
-    (setcar last-ident (+ (car last-ident) 1))
-    (concat ident-list)))
+;; (defun r0ymanesco/incr-id (ident)
+;;   (let* ((ident-list (append nil ident nil))
+;;          (last-ident (last ident-list)))
+;;     (setcar last-ident (+ (car last-ident) 1))
+;;     (concat ident-list)))
 
-(defun r0ymanesco/branch-id (ident)
-  (if (string-match-p ".*[0-9]$" ident)
-      (concat ident "a")
-    (concat ident "1")))
+;; (defun r0ymanesco/branch-id (ident)
+;;   (if (string-match-p ".*[0-9]$" ident)
+;;       (concat ident "a")
+;;     (concat ident "1")))
 
-(defun r0ymanesco/org-zettelkasten-create (incr newheading)
-  (let* ((current-id (org-entry-get nil "CUSTOM_ID"))
-         (next-id (funcall incr current-id)))
-    (funcall newheading)
-    (org-set-property "CUSTOM_ID" next-id)))
+;; (defun r0ymanesco/org-zettelkasten-create (incr newheading)
+;;   (let* ((current-id (org-entry-get nil "CUSTOM_ID"))
+;;          (next-id (funcall incr current-id)))
+;;     (funcall newheading)
+;;     (org-set-property "CUSTOM_ID" next-id)))
 
-(defun org-zettelkasten-create-heading ()
-  (r0ymanesco/org-zettelkasten-create
-   'r0ymanesco/incr-id 'org-insert-heading))
+;; (defun org-zettelkasten-create-heading ()
+;;   (r0ymanesco/org-zettelkasten-create
+;;    'r0ymanesco/incr-id 'org-insert-heading))
 
-(defun org-zettelkasten-create-subheading ()
-  (r0ymanesco/org-zettelkasten-create
-   'r0ymanesco/branch-id '(lambda () (org-insert-subheading ""))))
+;; (defun org-zettelkasten-create-subheading ()
+;;   (r0ymanesco/org-zettelkasten-create
+;;    'r0ymanesco/branch-id '(lambda () (org-insert-subheading ""))))
 
-(defun org-zettelkasten-create-dwim ()
-  (interactive)
-  (let ((current-point (save-excursion
-                         (org-back-to-heading)
-                         (point)))
-        (next-point (save-excursion
-                      (org-forward-heading-same-level 1 t)
-                      (point))))
-    (if (= current-point next-point)
-        (org-zettelkasten-create-heading)
-        (org-zettelkasten-create-subheading))))
+;; (defun org-zettelkasten-create-dwim ()
+;;   (interactive)
+;;   (let ((current-point (save-excursion
+;;                          (org-back-to-heading)
+;;                          (point)))
+;;         (next-point (save-excursion
+;;                       (org-forward-heading-same-level 1 t)
+;;                       (point))))
+;;     (if (= current-point next-point)
+;;         (org-zettelkasten-create-heading)
+;;         (org-zettelkasten-create-subheading))))
 
 
 ;; Tabs
@@ -364,32 +380,6 @@
 )
 
 
-;; Elfeed (RSS reader)
-;; data is stored in ~/.elfeed
-;; (global-set-key (kbd "SPC o E") 'elfeed)
-(map! :leader :prefix "o" :desc "Elfeed" "E" 'elfeed)
-(use-package elfeed
-:ensure t
-:bind
-("C-c r" . elfeed-update))
-(setq elfeed-feeds
-      '(
-        ;; programming
-        ;; ("https://www.reddit.com/r/emacs.rss" emacs)
-        ;; ("https://www.reddit.com/r/rust.rss" rust)
-        ;; economics
-        ("https://noahpinion.substack.com/feed" noahpinion)
-        ("https://braddelong.substack.com/feed" braddelong)
-        ("https://theovershoot.co/feed" theovershoot)
-        ("https://fallows.substack.com/feed" breakingnews)
-        ("https://www.platformer.news/feed" platformer)
-        ))
-
-(setq-default elfeed-search-filter "@7-days-ago +unread")
-(setq-default elfeed-search-title-max-width 100)
-(setq-default elfeed-search-title-min-width 100)
-
-
 ;; ssh-deploy
 ;; - prefix = C-c C-z, f = forced upload, u = upload, d = download, x = diff, t = terminal, b = browse, h = shell
 ;; Need to setup passwordless copy to remote and project .dir-locals.el config
@@ -402,43 +392,6 @@
        :config
        (ssh-deploy-line-mode) ;; If you want mode-line feature
        (ssh-deploy-add-menu)) ;; If you want menu-bar feature
-
-
-;; Tramp
-;; (use-package anaconda-mode
-;;   :config
-;;   (setq anaconda-mode-localhost-address "localhost")
-;;   )
-;; (setq anaconda-mode-localhost-address "localhost")
-;; (defun start-file-process-shell-command@around (start-file-process-shell-command name buffer &rest args)
-;;       "Start a program in a subprocess.  Return the process object for it.
-;; Similar to `start-process-shell-command', but calls `start-file-process'."
-;;       ;; On remote hosts, the local `shell-file-name' might be useless.
-;;       (let ((command (mapconcat 'identity args " ")))
-;;         (funcall start-file-process-shell-command name buffer command)))
-
-;; (advice-add 'start-file-process-shell-command :around #'start-file-process-shell-command@around)
-
-;; (use-package lsp-mode
-;;   :hook (python-mode . lsp)
-;;   :config
-;;   (lsp-register-client
-;;    (make-lsp-client :new-connection (lsp-tramp-connection "pyls")
-;;                     :major-modes '(python-mode)
-;;                     :remote? t
-;;                     :server-id 'pyls-remote)))
-
-;; Set tramp remote path
-;; (add-to-list 'load-path "/usr/share/emacs/site-lisp/")
-;; (require 'tramp)
-;; (add-to-list 'Info-directory-list "/usr/share/info/")
-;; (add-to-list 'tramp-remote-path "~/miniconda/bin")
-;; (add-to-list 'tramp-remote-path 'tramp-own-remote-path)
-
-;; (connection-local-set-profile-variables 'iblis
-;;    '((tramp-remote-path . ("~/miniconda/bin" tramp-default-remote-path))))
-;; (connection-local-set-profiles
-;;    '(:application tramp :user "tt2114" :machine "iblis") 'iblis)
 
 
 ;; (define-key evil-motion-state-map (kbd "C-e") nil)
