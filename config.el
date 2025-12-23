@@ -40,19 +40,142 @@
 
 
 ;; conda
-(require 'conda)
+;; (require 'conda)
 ;; if you want interactive shell support, include:
-(conda-env-initialize-interactive-shells)
-(custom-set-variables
- '(conda-anaconda-home "~/miniconda3/"))
+;; (conda-env-initialize-interactive-shells)
+;; (custom-set-variables
+;;  '(conda-anaconda-home "~/miniconda3/"))
 
 
 ;; poetry
-(use-package poetry
- :ensure t
- :config
- (setq poetry-tracking-model t))
-(map! :leader :prefix "p" :desc "poetry" "P" 'poetry)
+;; (use-package poetry
+;;  :ensure t
+;;  :config
+;;  (setq poetry-tracking-model t))
+;; (map! :leader :prefix "p" :desc "poetry" "P" 'poetry)
+
+;; pyenv-old
+;; (require 'pyenv-mode)
+
+;; (defun projectile-pyenv-mode-set ()
+;;   "Set pyenv version matching project name."
+;;   (let ((project (projectile-project-name)))
+;;     (if (member project (pyenv-mode-versions))
+;;         (pyenv-mode-set project)
+;;       (pyenv-mode-unset))))
+
+;; (add-hook 'projectile-after-switch-project-hook 'projectile-pyenv-mode-set)
+
+;; pyenv
+(require 'pyenv-mode)
+
+(defun projectile-pyenv-mode-set ()
+  "Set pyenv version matching project name or poetry environment."
+  (let* ((project (projectile-project-name))
+         (project-root (projectile-project-root))
+         (pyenv-versions (pyenv-mode-versions))
+         (venv-found nil))
+    
+    ;; First, clean up any previously activated venv
+    (when (bound-and-true-p pyvenv-virtual-env)
+      (pyvenv-deactivate))
+    (pyenv-mode-unset)
+    
+    (when project-root
+      (cond
+       ;; First check for poetry.lock and activate poetry env (highest priority for poetry projects)
+       ((file-exists-p (expand-file-name "poetry.lock" project-root))
+        (let* ((default-directory project-root)
+               (poetry-output (shell-command-to-string "poetry env info -p 2>&1"))
+               (poetry-env-dir (string-trim poetry-output)))
+          ;; Debug: uncomment to see what poetry returns
+          ;; (message "Poetry output: '%s'" poetry-output)
+          (if (and poetry-env-dir
+                   (not (string= poetry-env-dir ""))
+                   (not (string-match-p "could not find" (downcase poetry-env-dir)))
+                   (not (string-match-p "no virtual environment" (downcase poetry-env-dir)))
+                   (file-directory-p poetry-env-dir))
+              (progn
+                (pyvenv-activate poetry-env-dir)
+                (setq venv-found t)
+                (message "[venv] Activated poetry env: %s" poetry-env-dir))
+            ;; Fallback: search in poetry's cache directory
+            (let* ((poetry-cache-dir (expand-file-name "~/.cache/pypoetry/virtualenvs"))
+                   (matching-venv (when (file-directory-p poetry-cache-dir)
+                                    (car (directory-files poetry-cache-dir t
+                                                          (concat "^" (regexp-quote project) "-"))))))
+              (if (and matching-venv (file-directory-p matching-venv))
+                  (progn
+                    (pyvenv-activate matching-venv)
+                    (setq venv-found t)
+                    (message "[venv] Activated poetry cache env: %s" matching-venv))
+                (message "[venv] Poetry project found but no virtualenv. Output: %s" poetry-env-dir))))))
+       
+       ;; Check if there's a .venv directory in the project
+       ((file-directory-p (expand-file-name ".venv" project-root))
+        (let ((venv-path (expand-file-name ".venv" project-root)))
+          (pyvenv-activate venv-path)
+          (setq venv-found t)
+          (message "[venv] Activated .venv: %s" venv-path)))
+       
+       ;; Try exact project name match in pyenv
+       ((member project pyenv-versions)
+        (pyenv-mode-set project)
+        (setq venv-found t)
+        (message "[venv] Activated pyenv: %s" project))
+       
+       ;; Try poetry style naming (.venv-projectname)
+       ((member (concat ".venv-" project) pyenv-versions)
+        (let ((venv-name (concat ".venv-" project)))
+          (pyenv-mode-set venv-name)
+          (setq venv-found t)
+          (message "[venv] Activated pyenv (.venv-style): %s" venv-name)))
+       
+       ;; Check for common virtualenv directories
+       (t
+        (let ((common-venv-dirs '("venv" "env" ".env" "virtualenv")))
+          (catch 'found
+            (dolist (venv-dir common-venv-dirs)
+              (let ((venv-path (expand-file-name venv-dir project-root)))
+                (when (file-directory-p venv-path)
+                  (pyvenv-activate venv-path)
+                  (setq venv-found t)
+                  (message "[venv] Activated %s: %s" venv-dir venv-path)
+                  (throw 'found t)))))))))
+    
+    ;; If no environment was found, optionally prompt
+    (unless venv-found
+      (message "[venv] No Python environment found for project: %s" project)
+      (when (y-or-n-p "No Python environment found. Select manually?")
+        (call-interactively 'projectile-pyenv-set-manual-venv)))))
+
+(defun projectile-pyenv-set-manual-venv (venv-path)
+  "Manually set a virtualenv by entering its path.
+Prompts for VENV-PATH and activates it as the current virtualenv."
+  (interactive
+   (list (read-directory-name "Path to virtualenv: "
+                              (or (projectile-project-root) default-directory)
+                              nil t)))
+  (let ((expanded-path (expand-file-name venv-path)))
+    (if (and (file-directory-p expanded-path)
+             (or (file-exists-p (expand-file-name "bin/python" expanded-path))
+                 (file-exists-p (expand-file-name "Scripts/python.exe" expanded-path))))
+        (progn
+          ;; Deactivate any existing venv first
+          (when (bound-and-true-p pyvenv-virtual-env)
+            (pyvenv-deactivate))
+          (pyenv-mode-unset)
+          ;; Activate the new venv
+          (pyvenv-activate expanded-path)
+          (message "[venv] Manually activated: %s" expanded-path))
+      (error "[venv] Invalid virtualenv path: %s (no python executable found)" expanded-path))))
+
+(add-hook 'projectile-after-switch-project-hook 'projectile-pyenv-mode-set)
+
+;; Keybinding to manually set virtualenv path
+(map! :leader
+      :prefix "p"
+      :desc "Set virtualenv path" "v" #'projectile-pyenv-set-manual-venv)
 
 
 ;; Magit
@@ -65,14 +188,16 @@
   :bind (("C-c a" . aidermacs-transient-menu))
   :config
   ; Set API_KEY in .bashrc, that will automatically picked up by aider or in elisp
-  (setenv "API_KEY" "sk-...")
+  (unless (getenv "OPENROUTER_API_KEY")
+    (warn "OPENROUTER_API_KEY not set in environment")
+    )
   :custom
   ; See the Configuration section below
-  (aidermacs-use-architect-mode t)
-  (aidermacs-default-model "openrouter/anthropic/claude-3.7-sonnet")
-  (aidermacs-architect-model "openrouter/anthropic/claude-3.7-sonnet:thinking")
-  (aidermacs-editor-model "openrouter/anthropic/claude-3.7-sonnet")
-  (aidermacs-weak-model "openrouter/google/gemini-2.5-flash-preview")
+  (aidermacs-default-chat-mode 'architect)
+  (aidermacs-default-model "openrouter/anthropic/claude-sonnet-4.5")
+  (aidermacs-architect-model "openrouter/anthropic/claude-opus-4.5")
+  (aidermacs-editor-model "openrouter/anthropic/claude-sonnet-4.5")
+  (aidermacs-weak-model "openrouter/google/gemini-3-flash-preview")
   )
 
 
