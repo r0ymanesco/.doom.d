@@ -170,12 +170,24 @@ Prompts for VENV-PATH and activates it as the current virtualenv."
           (message "[venv] Manually activated: %s" expanded-path))
       (error "[venv] Invalid virtualenv path: %s (no python executable found)" expanded-path))))
 
+(defun projectile-pyenv-show-current-venv ()
+  "Display the currently active Python virtualenv path."
+  (interactive)
+  (cond
+   ((bound-and-true-p pyvenv-virtual-env)
+    (message "[venv] Current virtualenv: %s" pyvenv-virtual-env))
+   ((bound-and-true-p pyenv-mode-version)
+    (message "[venv] Current pyenv version: %s" pyenv-mode-version))
+   (t
+    (message "[venv] No Python virtualenv currently active"))))
+
 (add-hook 'projectile-after-switch-project-hook 'projectile-pyenv-mode-set)
 
 ;; Keybinding to manually set virtualenv path
 (map! :leader
       :prefix "p"
-      :desc "Set virtualenv path" "v" #'projectile-pyenv-set-manual-venv)
+      :desc "Set virtualenv path" "v" #'projectile-pyenv-set-manual-venv
+      :desc "Show current venv" "V" #'projectile-pyenv-show-current-venv)
 
 
 ;; Magit
