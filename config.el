@@ -203,6 +203,9 @@ Prompts for VENV-PATH and activates it as the current virtualenv."
   (unless (getenv "OPENROUTER_API_KEY")
     (warn "OPENROUTER_API_KEY not set in environment")
     )
+  (setq aidermacs-vterm-multiline-newline-key "S-<return>")
+  ;; Enable file watching
+  (setq aidermacs-watch-files t)
   :custom
   ; See the Configuration section below
   (aidermacs-default-chat-mode 'architect)
