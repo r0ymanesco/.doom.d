@@ -151,24 +151,28 @@
       (when (y-or-n-p "No Python environment found. Select manually?")
         (call-interactively 'projectile-pyenv-set-manual-venv)))))
 
+(defvar projectile-pyenv--manual-venvs (make-hash-table :test 'equal)
+  "Hash table mapping project roots to manually set virtualenv paths.")
+
 (defun projectile-pyenv-set-manual-venv (venv-path)
-  "Manually set a virtualenv by entering its path.
-Prompts for VENV-PATH and activates it as the current virtualenv."
+  "Manually set a virtualenv by entering its path."
   (interactive
    (list (read-directory-name "Path to virtualenv: "
                               (or (projectile-project-root) default-directory)
                               nil t)))
-  (let ((expanded-path (expand-file-name venv-path)))
+  (let ((expanded-path (expand-file-name venv-path))
+        (project-root (projectile-project-root)))
     (if (and (file-directory-p expanded-path)
              (or (file-exists-p (expand-file-name "bin/python" expanded-path))
                  (file-exists-p (expand-file-name "Scripts/python.exe" expanded-path))))
         (progn
-          ;; Deactivate any existing venv first
           (when (bound-and-true-p pyvenv-virtual-env)
             (pyvenv-deactivate))
           (pyenv-mode-unset)
-          ;; Activate the new venv
           (pyvenv-activate expanded-path)
+          (setq projectile-pyenv--last-project project-root)
+          ;; Store in hash table
+          (puthash project-root expanded-path projectile-pyenv--manual-venvs)
           (message "[venv] Manually activated: %s" expanded-path))
       (error "[venv] Invalid virtualenv path: %s (no python executable found)" expanded-path))))
 
@@ -187,8 +191,18 @@ Prompts for VENV-PATH and activates it as the current virtualenv."
             (when (and (projectile-project-p)
                        (not (equal (projectile-project-root)
                                    projectile-pyenv--last-project)))
-              (setq projectile-pyenv--last-project (projectile-project-root))
-              (projectile-pyenv-mode-set))))
+              (let* ((project-root (projectile-project-root))
+                     (manual-venv (gethash project-root projectile-pyenv--manual-venvs)))
+                (setq projectile-pyenv--last-project project-root)
+                (if manual-venv
+                    ;; Restore manually set venv
+                    (progn
+                      (when (bound-and-true-p pyvenv-virtual-env)
+                        (pyvenv-deactivate))
+                      (pyvenv-activate manual-venv)
+                      (message "[venv] Restored manual venv: %s" manual-venv))
+                  ;; Auto-detect venv
+                  (projectile-pyenv-mode-set))))))
 
 ;; Keybinding to manually set virtualenv path
 (map! :leader
