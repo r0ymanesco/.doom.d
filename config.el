@@ -39,36 +39,20 @@
 (setq display-line-numbers-type t)
 
 
-;; conda
-;; (require 'conda)
-;; if you want interactive shell support, include:
-;; (conda-env-initialize-interactive-shells)
-;; (custom-set-variables
-;;  '(conda-anaconda-home "~/miniconda3/"))
-
-
-;; poetry
-;; (use-package poetry
-;;  :ensure t
-;;  :config
-;;  (setq poetry-tracking-model t))
-;; (map! :leader :prefix "p" :desc "poetry" "P" 'poetry)
-
-;; pyenv-old
-;; (require 'pyenv-mode)
-
-;; (defun projectile-pyenv-mode-set ()
-;;   "Set pyenv version matching project name."
-;;   (let ((project (projectile-project-name)))
-;;     (if (member project (pyenv-mode-versions))
-;;         (pyenv-mode-set project)
-;;       (pyenv-mode-unset))))
-
-;; (add-hook 'projectile-after-switch-project-hook 'projectile-pyenv-mode-set)
-
 ;; pyenv
 (require 'pyvenv)
 (require 'pyenv-mode)
+
+(defun projectile-pyenv--restart-lsp-if-needed ()
+  "Restart LSP if active in current buffer."
+  (when (and (bound-and-true-p lsp-mode)
+             (fboundp 'lsp-workspace-restart)
+             (lsp-workspaces))
+    (let ((workspaces (lsp-workspaces)))
+      (run-with-idle-timer 0.5 nil
+                           (lambda ()
+                             (dolist (ws workspaces)
+                               (lsp-workspace-restart ws)))))))
 
 (defun projectile-pyenv-mode-set ()
   "Set pyenv version matching project name or poetry environment."
@@ -84,13 +68,11 @@
     
     (when project-root
       (cond
-       ;; First check for poetry.lock and activate poetry env (highest priority for poetry projects)
+       ;; First check for poetry.lock and activate poetry env
        ((file-exists-p (expand-file-name "poetry.lock" project-root))
         (let* ((default-directory project-root)
                (poetry-output (shell-command-to-string "poetry env info -p 2>&1"))
                (poetry-env-dir (string-trim poetry-output)))
-          ;; Debug: uncomment to see what poetry returns
-          ;; (message "Poetry output: '%s'" poetry-output)
           (if (and poetry-env-dir
                    (not (string= poetry-env-dir ""))
                    (not (string-match-p "could not find" (downcase poetry-env-dir)))
@@ -111,6 +93,21 @@
                     (setq venv-found t)
                     (message "[venv] Activated poetry cache env: %s" matching-venv))
                 (message "[venv] Poetry project found but no virtualenv. Output: %s" poetry-env-dir))))))
+       
+       ;; Check for .python-version file (pyenv local version)
+       ((file-exists-p (expand-file-name ".python-version" project-root))
+        (let* ((version-file (expand-file-name ".python-version" project-root))
+               (pyenv-version (string-trim (with-temp-buffer
+                                             (insert-file-contents version-file)
+                                             (buffer-string))))
+               (venv-path (expand-file-name pyenv-version "~/.pyenv/versions")))
+          (if (file-directory-p venv-path)
+              (progn
+                (pyvenv-activate venv-path)
+                (setq venv-found t)
+                (message "[venv] Activated from .python-version: %s" venv-path))
+            (message "[venv] .python-version specifies '%s' but path not found: %s"
+                     pyenv-version venv-path))))
        
        ;; Check if there's a .venv directory in the project
        ((file-directory-p (expand-file-name ".venv" project-root))
@@ -145,6 +142,10 @@
                   (message "[venv] Activated %s: %s" venv-dir venv-path)
                   (throw 'found t)))))))))
     
+    ;; Restart LSP if venv was activated
+    (when venv-found
+      (projectile-pyenv--restart-lsp-if-needed))
+    
     ;; If no environment was found, optionally prompt
     (unless venv-found
       (message "[venv] No Python environment found for project: %s" project)
@@ -153,6 +154,9 @@
 
 (defvar projectile-pyenv--manual-venvs (make-hash-table :test 'equal)
   "Hash table mapping project roots to manually set virtualenv paths.")
+
+(defvar projectile-pyenv--last-project nil
+  "Track the last project to avoid redundant activations.")
 
 (defun projectile-pyenv-set-manual-venv (venv-path)
   "Manually set a virtualenv by entering its path."
@@ -173,6 +177,8 @@
           (setq projectile-pyenv--last-project project-root)
           ;; Store in hash table
           (puthash project-root expanded-path projectile-pyenv--manual-venvs)
+          ;; Restart LSP
+          (projectile-pyenv--restart-lsp-if-needed)
           (message "[venv] Manually activated: %s" expanded-path))
       (error "[venv] Invalid virtualenv path: %s (no python executable found)" expanded-path))))
 
@@ -182,9 +188,6 @@
   (if (and (boundp 'pyvenv-virtual-env) pyvenv-virtual-env)
       (message "[venv] Current virtualenv: %s" pyvenv-virtual-env)
     (message "[venv] No Python virtualenv currently active")))
-
-(defvar projectile-pyenv--last-project nil
-  "Track the last project to avoid redundant activations.")
 
 (add-hook 'find-file-hook
           (lambda ()
@@ -200,11 +203,12 @@
                       (when (bound-and-true-p pyvenv-virtual-env)
                         (pyvenv-deactivate))
                       (pyvenv-activate manual-venv)
+                      (projectile-pyenv--restart-lsp-if-needed)
                       (message "[venv] Restored manual venv: %s" manual-venv))
                   ;; Auto-detect venv
                   (projectile-pyenv-mode-set))))))
 
-;; Keybinding to manually set virtualenv path
+;; Keybinding to manually set or show virtualenv path
 (map! :leader
       :prefix "p"
       :desc "Set virtualenv path" "v" #'projectile-pyenv-set-manual-venv
