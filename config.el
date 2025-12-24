@@ -67,6 +67,7 @@
 ;; (add-hook 'projectile-after-switch-project-hook 'projectile-pyenv-mode-set)
 
 ;; pyenv
+(require 'pyvenv)
 (require 'pyenv-mode)
 
 (defun projectile-pyenv-mode-set ()
@@ -120,16 +121,17 @@
        
        ;; Try exact project name match in pyenv
        ((member project pyenv-versions)
-        (pyenv-mode-set project)
-        (setq venv-found t)
-        (message "[venv] Activated pyenv: %s" project))
+        (let ((venv-path (expand-file-name project "~/.pyenv/versions")))
+          (pyvenv-activate venv-path)
+          (setq venv-found t)
+          (message "[venv] Activated pyenv: %s" venv-path)))
        
        ;; Try poetry style naming (.venv-projectname)
        ((member (concat ".venv-" project) pyenv-versions)
-        (let ((venv-name (concat ".venv-" project)))
-          (pyenv-mode-set venv-name)
+        (let ((venv-path (expand-file-name (concat ".venv-" project) "~/.pyenv/versions")))
+          (pyvenv-activate venv-path)
           (setq venv-found t)
-          (message "[venv] Activated pyenv (.venv-style): %s" venv-name)))
+          (message "[venv] Activated pyenv (.venv-style): %s" venv-path)))
        
        ;; Check for common virtualenv directories
        (t
@@ -173,15 +175,20 @@ Prompts for VENV-PATH and activates it as the current virtualenv."
 (defun projectile-pyenv-show-current-venv ()
   "Display the currently active Python virtualenv path."
   (interactive)
-  (cond
-   ((bound-and-true-p pyvenv-virtual-env)
-    (message "[venv] Current virtualenv: %s" pyvenv-virtual-env))
-   ((bound-and-true-p pyenv-mode-version)
-    (message "[venv] Current pyenv version: %s" pyenv-mode-version))
-   (t
-    (message "[venv] No Python virtualenv currently active"))))
+  (if (and (boundp 'pyvenv-virtual-env) pyvenv-virtual-env)
+      (message "[venv] Current virtualenv: %s" pyvenv-virtual-env)
+    (message "[venv] No Python virtualenv currently active")))
 
-(add-hook 'projectile-after-switch-project-hook 'projectile-pyenv-mode-set)
+(defvar projectile-pyenv--last-project nil
+  "Track the last project to avoid redundant activations.")
+
+(add-hook 'find-file-hook
+          (lambda ()
+            (when (and (projectile-project-p)
+                       (not (equal (projectile-project-root)
+                                   projectile-pyenv--last-project)))
+              (setq projectile-pyenv--last-project (projectile-project-root))
+              (projectile-pyenv-mode-set))))
 
 ;; Keybinding to manually set virtualenv path
 (map! :leader
@@ -212,7 +219,7 @@ Prompts for VENV-PATH and activates it as the current virtualenv."
   (aidermacs-default-model "openrouter/anthropic/claude-sonnet-4.5")
   (aidermacs-architect-model "openrouter/anthropic/claude-opus-4.5")
   (aidermacs-editor-model "openrouter/anthropic/claude-sonnet-4.5")
-  (aidermacs-weak-model "openrouter/google/gemini-3-flash-preview")
+  (aidermacs-weak-model "openrouter/anthropic/claude-sonnet-4.5")
   )
 
 
