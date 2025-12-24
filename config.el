@@ -43,6 +43,15 @@
 (require 'pyvenv)
 (require 'pyenv-mode)
 
+(defvar projectile-pyenv--manual-venvs (make-hash-table :test 'equal)
+  "Hash table mapping project roots to manually set virtualenv paths.")
+
+(defvar projectile-pyenv--last-project nil
+  "Track the last project to avoid redundant activations.")
+
+(defvar projectile-pyenv--skipped-projects (make-hash-table :test 'equal)
+  "Hash table of projects where user declined to set venv manually.")
+
 (defun projectile-pyenv--restart-lsp-if-needed ()
   "Restart LSP if active in current buffer."
   (when (and (bound-and-true-p lsp-mode)
@@ -149,14 +158,10 @@
     ;; If no environment was found, optionally prompt
     (unless venv-found
       (message "[venv] No Python environment found for project: %s" project)
-      (when (y-or-n-p "No Python environment found. Select manually?")
-        (call-interactively 'projectile-pyenv-set-manual-venv)))))
-
-(defvar projectile-pyenv--manual-venvs (make-hash-table :test 'equal)
-  "Hash table mapping project roots to manually set virtualenv paths.")
-
-(defvar projectile-pyenv--last-project nil
-  "Track the last project to avoid redundant activations.")
+      (unless (gethash project-root projectile-pyenv--skipped-projects)
+        (if (y-or-n-p "No Python environment found. Select manually?")
+            (call-interactively 'projectile-pyenv-set-manual-venv)
+          (puthash project-root t projectile-pyenv--skipped-projects))))))
 
 (defun projectile-pyenv-set-manual-venv (venv-path)
   "Manually set a virtualenv by entering its path."
