@@ -194,24 +194,27 @@
       (message "[venv] Current virtualenv: %s" pyvenv-virtual-env)
     (message "[venv] No Python virtualenv currently active")))
 
-(add-hook 'find-file-hook
-          (lambda ()
-            (when (and (projectile-project-p)
-                       (not (equal (projectile-project-root)
-                                   projectile-pyenv--last-project)))
-              (let* ((project-root (projectile-project-root))
-                     (manual-venv (gethash project-root projectile-pyenv--manual-venvs)))
-                (setq projectile-pyenv--last-project project-root)
-                (if manual-venv
-                    ;; Restore manually set venv
-                    (progn
-                      (when (bound-and-true-p pyvenv-virtual-env)
-                        (pyvenv-deactivate))
-                      (pyvenv-activate manual-venv)
-                      (projectile-pyenv--restart-lsp-if-needed)
-                      (message "[venv] Restored manual venv: %s" manual-venv))
-                  ;; Auto-detect venv
-                  (projectile-pyenv-mode-set))))))
+(defun projectile-pyenv-auto-activate ()
+  "Auto-activate Python virtualenv when opening a Python file in a new project."
+  (when (and (projectile-project-p)
+             (not (equal (projectile-project-root)
+                         projectile-pyenv--last-project)))
+    (let* ((project-root (projectile-project-root))
+           (manual-venv (gethash project-root projectile-pyenv--manual-venvs)))
+      (setq projectile-pyenv--last-project project-root)
+      (if manual-venv
+          ;; Restore manually set venv
+          (progn
+            (when (bound-and-true-p pyvenv-virtual-env)
+              (pyvenv-deactivate))
+            (pyvenv-activate manual-venv)
+            (projectile-pyenv--restart-lsp-if-needed)
+            (message "[venv] Restored manual venv: %s" manual-venv))
+        ;; Auto-detect venv
+        (projectile-pyenv-mode-set)))))
+
+(add-hook 'python-mode-hook #'projectile-pyenv-auto-activate)
+(add-hook 'python-ts-mode-hook #'projectile-pyenv-auto-activate)
 
 ;; Keybinding to manually set or show virtualenv path
 (map! :leader
