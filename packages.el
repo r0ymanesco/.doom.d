@@ -24,6 +24,7 @@
 (package! transient)
 (package! aidermacs)
 (package! cond-let)
+(package! exec-path-from-shell)
 ;;(package! poetry)
 ;;(package! emacs-highlight-indent-guides)
 ;;(package! elfeed)

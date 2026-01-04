@@ -10,6 +10,14 @@
       user-mail-address "r0ymanesco@gmail.com")
 
 
+(use-package exec-path-from-shell
+  :config
+  (when (or (memq window-system '(mac ns x))
+            (daemonp))
+    (exec-path-from-shell-copy-envs '("OPENAI_API_KEY" "OPENROUTER_API_KEY"))
+    (exec-path-from-shell-initialize)))
+
+
 ;; Doom exposes five (optional) variables for controlling fonts in Doom. Here
 ;; are the three important ones:
 ;;
@@ -236,16 +244,19 @@
   (unless (getenv "OPENROUTER_API_KEY")
     (warn "OPENROUTER_API_KEY not set in environment")
     )
+  (unless (getenv "OPENAI_API_KEY")
+    (warn "OPENAI_API_KEY not set in environment")
+    )
   (setq aidermacs-vterm-multiline-newline-key "S-<return>")
   ;; Enable file watching
   (setq aidermacs-watch-files t)
   :custom
   ; See the Configuration section below
   (aidermacs-default-chat-mode 'architect)
-  (aidermacs-default-model "openrouter/anthropic/claude-sonnet-4.5")
-  (aidermacs-architect-model "openrouter/anthropic/claude-opus-4.5")
-  (aidermacs-editor-model "openrouter/anthropic/claude-sonnet-4.5")
-  (aidermacs-weak-model "openrouter/anthropic/claude-sonnet-4.5")
+  (aidermacs-default-model "gpt-5.2")
+  (aidermacs-architect-model "gpt-5.2")
+  (aidermacs-editor-model "gpt-5.2")
+  (aidermacs-weak-model "gpt-5.2")
   )
 
 
