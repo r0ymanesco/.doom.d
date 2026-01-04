@@ -250,6 +250,8 @@
   (setq aidermacs-vterm-multiline-newline-key "S-<return>")
   ;; Enable file watching
   (setq aidermacs-watch-files t)
+  ;; Using reasoning
+  (setq aidermacs-extra-args '("--reasoning-effort" "medium"))
   :custom
   ; See the Configuration section below
   (aidermacs-default-chat-mode 'architect)
