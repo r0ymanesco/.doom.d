@@ -9,15 +9,6 @@
 (setq user-full-name "r0ymanesco"
       user-mail-address "r0ymanesco@gmail.com")
 
-
-(use-package exec-path-from-shell
-  :config
-  (when (or (memq window-system '(mac ns x))
-            (daemonp))
-    (exec-path-from-shell-copy-envs '("OPENAI_API_KEY" "OPENROUTER_API_KEY"))
-    (exec-path-from-shell-initialize)))
-
-
 ;; Doom exposes five (optional) variables for controlling fonts in Doom. Here
 ;; are the three important ones:
 ;;
@@ -40,6 +31,15 @@
 
 ;; This fixes the pound key issue on UK MacOS keyboards
 (global-set-key (kbd "M-3") '(lambda () (interactive) (insert "#")))
+
+
+;; Ensure env vars are available in Emacs
+(use-package exec-path-from-shell
+  :config
+  (when (or (memq window-system '(mac ns x))
+            (daemonp))
+    (exec-path-from-shell-copy-envs '("OPENAI_API_KEY" "OPENROUTER_API_KEY"))
+    (exec-path-from-shell-initialize)))
 
 
 ;; This determines the style of line numbers in effect. If set to `nil', line
