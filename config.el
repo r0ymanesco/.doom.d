@@ -262,6 +262,35 @@
   )
 
 
+;; Claude code
+(use-package! claude-code-ide
+  :config
+  (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
+  (map! :map vterm-mode-map
+        "S-<return>" #'claude-code-ide-insert-newline)
+  (advice-add 'claude-code-ide-insert-at-mentioned :after
+              (lambda (&rest _) (claude-code-ide-switch-to-buffer))))
+(map! :leader
+      :prefix ("c" . "Claude Code")
+      :desc "Menu" "m" #'claude-code-ide-menu
+      :desc "Start Claude Code for project" "s" #'claude-code-ide
+      :desc "Continue conversation" "C" #'claude-code-ide-continue
+      :desc "Resume conversation" "r" #'claude-code-ide-resume
+      :desc "Stop for project" "q" #'claude-code-ide-stop
+      :desc "Switch to project session buffer" "b" #'claude-code-ide-switch-to-buffer
+      :desc "List sessions" "l" #'claude-code-ide-list-sessions
+      :desc "Toggle window" "t" #'claude-code-ide-toggle
+      :desc "Toggle recent" "T" #'claude-code-ide-toggle-recent
+      :desc "Send prompt" "p" #'claude-code-ide-send-prompt
+      :desc "Send selection (@)" "a" #'claude-code-ide-insert-at-mentioned
+      :desc "Send escape" "e" #'claude-code-ide-send-escape
+      :desc "Check status" "S" #'claude-code-ide-check-status
+      :desc "Show debug" "d" #'claude-code-ide-show-debug
+      :desc "Clear debug" "D" #'claude-code-ide-clear-debug
+      :desc "Setup Emacs tools" "E" #'claude-code-ide-emacs-tools-setup
+) 
+
+
 ;; Ranger
 (ranger-override-dired-mode t)
 (map! :leader :prefix "o" :desc "ranger" "D" 'ranger)

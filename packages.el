@@ -25,6 +25,8 @@
 (package! aidermacs)
 (package! cond-let)
 (package! exec-path-from-shell)
+(package! claude-code-ide
+  :recipe (:host github :repo "manzaltu/claude-code-ide.el"))
 ;;(package! poetry)
 ;;(package! emacs-highlight-indent-guides)
 ;;(package! elfeed)
