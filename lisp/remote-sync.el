@@ -50,6 +50,12 @@
 (defvar remote-sync--projects (make-hash-table :test 'equal)
   "Map local cache paths to remote TRAMP paths.")
 
+(defun remote-sync--hash-to-alist (table)
+  "Convert hash TABLE to an alist."
+  (let (alist)
+    (maphash (lambda (k v) (push (cons k v) alist)) table)
+    alist))
+
 ;;; ============================================================
 ;;; SSH Config & Host Management
 ;;; ============================================================
@@ -132,16 +138,27 @@
     (expand-file-name (concat host normalized-path) remote-sync-cache-directory)))
 
 (defun remote-sync--tramp-path (host remote-path)
-  "Get TRAMP path for HOST:REMOTE-PATH."
-  (format "/ssh:%s:%s" host remote-path))
+  "Get TRAMP path for HOST:REMOTE-PATH.
+Expands tilde to full home directory path for TRAMP compatibility."
+  (let ((expanded-path
+         (if (string-prefix-p "~" remote-path)
+             ;; Expand tilde to /home/user
+             (concat "/home/" (remote-sync--get-remote-user host)
+                     (substring remote-path 1))
+           remote-path)))
+    (format "/ssh:%s:%s" host expanded-path)))
 
 (defun remote-sync--local-to-remote (local-path)
   "Get remote TRAMP path for LOCAL-PATH if it's a synced project."
-  (let ((expanded (expand-file-name local-path)))
-    (cl-loop for local being the hash-keys of remote-sync--projects
-             using (hash-values remote)
-             when (string-prefix-p local expanded)
-             return (concat remote (substring expanded (length local))))))
+  ;; Quick check: if not under cache directory, skip expensive lookup
+  (when (and local-path
+             (string-prefix-p (expand-file-name remote-sync-cache-directory)
+                              (expand-file-name local-path)))
+    (let ((expanded (expand-file-name local-path)))
+      (cl-loop for local being the hash-keys of remote-sync--projects
+               using (hash-values remote)
+               when (string-prefix-p local expanded)
+               return (concat remote (substring expanded (length local)))))))
 
 (defun remote-sync--project-info (local-path)
   "Get (host . remote-path) for LOCAL-PATH."
@@ -161,16 +178,15 @@
 
 (defun remote-sync--is-project-root-p (host path)
   "Check if PATH on HOST looks like a project root."
-  (let ((tramp-path (remote-sync--tramp-path host path)))
-    (or (file-exists-p (expand-file-name ".git" tramp-path))
-        (file-exists-p (expand-file-name "package.json" tramp-path))
-        (file-exists-p (expand-file-name "Cargo.toml" tramp-path))
-        (file-exists-p (expand-file-name "pyproject.toml" tramp-path))
-        (file-exists-p (expand-file-name "setup.py" tramp-path))
-        (file-exists-p (expand-file-name "go.mod" tramp-path))
-        (file-exists-p (expand-file-name "Makefile" tramp-path))
-        (file-exists-p (expand-file-name ".projectile" tramp-path))
-        (file-exists-p (expand-file-name "requirements.txt" tramp-path)))))
+  (let* ((tramp-path (remote-sync--tramp-path host path))
+         (project-markers '(".git" "package.json" "Cargo.toml" "pyproject.toml"
+                            "setup.py" "go.mod" "Makefile" ".projectile"
+                            "requirements.txt" "pom.xml" "build.gradle")))
+    (condition-case nil
+        (cl-some (lambda (marker)
+                   (file-exists-p (expand-file-name marker tramp-path)))
+                 project-markers)
+      (error nil))))
 
 (defun remote-sync--list-directory (host path)
   "List directories in PATH on HOST."
@@ -183,42 +199,67 @@
          (directory-files tramp-path nil "^[^.]"))
       (error nil))))
 
+(defun remote-sync--join-remote-path (base name)
+  "Join BASE and NAME for remote paths (don't use expand-file-name which uses local fs)."
+  (let ((base-clean (if (string-suffix-p "/" base)
+                        (substring base 0 -1)
+                      base)))
+    (concat base-clean "/" name)))
+
+(defun remote-sync--parent-remote-path (path)
+  "Get parent directory of remote PATH."
+  (let ((clean-path (if (string-suffix-p "/" path)
+                        (substring path 0 -1)
+                      path)))
+    (if (or (string= clean-path "~")
+            (string= clean-path "/")
+            (not (string-match-p "/" clean-path)))
+        nil
+      (file-name-directory clean-path))))
+
 (defun remote-sync--browse-remote (host &optional current-path)
   "Browse directories on HOST starting from CURRENT-PATH.
 Returns selected directory path or nil if cancelled."
   (let* ((path (or current-path "~"))
+         (_ (message "Browsing %s on %s..." path host))
          (dirs (remote-sync--list-directory host path))
          (is-project (remote-sync--is-project-root-p host path))
          (choices (append
                    (when is-project '(">> SELECT THIS DIRECTORY <<"))
                    '(".. (up)")
                    (mapcar (lambda (d) (concat d "/")) dirs))))
-    (if (null choices)
-        (if is-project
-            path
-          (progn
-            (message "Empty directory and not a project root")
-            nil))
-      (let* ((prompt (format "[%s] %s > " host (abbreviate-file-name path)))
+    ;; Always show choices if we have any dirs or it's a project
+    (if (and (null dirs) (not is-project))
+        ;; Empty non-project directory
+        (if (yes-or-no-p (format "%s appears empty and is not a project. Go up? " path))
+            (let ((parent (remote-sync--parent-remote-path path)))
+              (if parent
+                  (remote-sync--browse-remote host parent)
+                nil))
+          nil)
+      (let* ((prompt (if is-project
+                         (format "[%s] %s (PROJECT) > " host path)
+                       (format "[%s] %s > " host path)))
              (selection (completing-read prompt choices nil t)))
         (cond
+         ((or (null selection) (string-empty-p selection))
+          nil)
          ((string= selection ">> SELECT THIS DIRECTORY <<")
           path)
          ((string= selection ".. (up)")
-          (let ((parent (file-name-directory (directory-file-name path))))
-            (if (or (null parent) (string= parent path))
-                (progn (message "Already at root") (remote-sync--browse-remote host path))
-              (remote-sync--browse-remote host parent))))
-         ((null selection)
-          nil)
+          (let ((parent (remote-sync--parent-remote-path path)))
+            (if parent
+                (remote-sync--browse-remote host parent)
+              (progn (message "Already at root") (remote-sync--browse-remote host path)))))
          (t
-          (let ((new-path (expand-file-name
-                           (string-remove-suffix "/" selection)
-                           path)))
+          (let ((new-path (remote-sync--join-remote-path path (string-remove-suffix "/" selection))))
+            ;; Check if it's a project and select directly
+            (message "Checking if %s is a project..." new-path)
             (if (remote-sync--is-project-root-p host new-path)
-                (if (yes-or-no-p (format "Select '%s'? " new-path))
-                    new-path
-                  (remote-sync--browse-remote host new-path))
+                (progn
+                  (message "Found project: %s" new-path)
+                  new-path)
+              ;; Otherwise, keep browsing
               (remote-sync--browse-remote host new-path)))))))))
 
 (defun remote-sync--find-git-projects (host base-path &optional max-depth)
@@ -274,30 +315,52 @@ Browse remote filesystem starting from home directory."
               (projectile-switch-project-by-name existing))
           (remote-sync--do-clone host remote-path))))))
 
+(defun remote-sync--expand-remote-path (host path)
+  "Expand PATH for remote HOST, converting ~ to full home directory."
+  (if (string-prefix-p "~" path)
+      (concat "/home/" (remote-sync--get-remote-user host) (substring path 1))
+    path))
+
 (defun remote-sync--do-clone (host remote-path)
   "Clone project from HOST at REMOTE-PATH."
   ;; Ensure Mutagen daemon is running
   (remote-sync--ensure-mutagen-daemon)
-  (let* ((local-path (remote-sync--cache-path host remote-path))
+  ;; Expand tilde to full path for Mutagen
+  (let* ((expanded-remote-path (remote-sync--expand-remote-path host remote-path))
+         (local-path (remote-sync--cache-path host remote-path))
          (project-name (file-name-nondirectory (directory-file-name remote-path)))
-         (sync-name (format "%s_%s"
-                            host
-                            (replace-regexp-in-string
-                             "[/~]" "_"
-                             (directory-file-name remote-path)))))
+         ;; Mutagen sync names: lowercase alphanumeric and hyphens only
+         (sync-name (downcase
+                     (replace-regexp-in-string
+                      "[^a-zA-Z0-9]+" "-"
+                      (format "%s-%s" host project-name)))))
 
     ;; Create cache directory
     (make-directory local-path t)
 
     ;; Start Mutagen sync
     (message "Starting Mutagen sync for %s..." project-name)
+    (message "Remote: %s:%s" host expanded-remote-path)
+    (message "Local: %s" local-path)
     (let* ((ignore-args (mapconcat (lambda (p) (format "--ignore=%s" p))
                                    remote-sync-ignores " "))
            (cmd (format "mutagen sync create %s:%s %s --name=%s %s 2>&1"
-                        host remote-path local-path sync-name ignore-args))
+                        host expanded-remote-path local-path sync-name ignore-args))
+           (_ (message "Running: %s" cmd))
            (result (shell-command-to-string cmd)))
-      (when (string-match-p "Error\\|error\\|failed" result)
-        (user-error "Failed to create mutagen sync: %s" result)))
+      (when (string-match-p "Error\\|error\\|failed\\|unable" result)
+        ;; Show error in a buffer so user can read it
+        (let ((buf (get-buffer-create "*mutagen-error*")))
+          (with-current-buffer buf
+            (erase-buffer)
+            (insert "Mutagen sync failed\n")
+            (insert "===================\n\n")
+            (insert "Command:\n")
+            (insert cmd)
+            (insert "\n\nOutput:\n")
+            (insert result))
+          (pop-to-buffer buf))
+        (user-error "Failed to create mutagen sync - see *mutagen-error* buffer")))
 
     ;; Register the project
     (puthash local-path (remote-sync--tramp-path host remote-path)
@@ -442,7 +505,7 @@ Otherwise, prompts to select a host."
   (with-temp-file (remote-sync--registry-file)
     (insert ";; Remote-sync project registry -*- lisp-data -*-\n")
     (insert ";; Do not edit manually\n\n")
-    (prin1 (hash-table-alist remote-sync--projects) (current-buffer))))
+    (prin1 (remote-sync--hash-to-alist remote-sync--projects) (current-buffer))))
 
 (defun remote-sync--load-registry ()
   "Load project registry from disk."
@@ -613,7 +676,7 @@ Otherwise, prompts to select a host."
   "Save virtualenv registry to disk."
   (with-temp-file (remote-sync--venv-registry-file)
     (insert ";; Remote-sync virtualenv registry -*- lisp-data -*-\n\n")
-    (prin1 (hash-table-alist remote-sync--project-venvs) (current-buffer))))
+    (prin1 (remote-sync--hash-to-alist remote-sync--project-venvs) (current-buffer))))
 
 (defun remote-sync--load-venv-registry ()
   "Load virtualenv registry from disk."

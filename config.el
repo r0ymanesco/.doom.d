@@ -65,7 +65,13 @@
   "Return remote TRAMP path if in a remote-sync project, nil otherwise."
   (when (and (bound-and-true-p remote-sync--projects)
              (projectile-project-p))
-    (gethash (projectile-project-root) remote-sync--projects)))
+    (let* ((root (projectile-project-root))
+           ;; Normalize: remove trailing slash, expand
+           (normalized (directory-file-name (expand-file-name root))))
+      ;; Try both with and without trailing slash
+      (or (gethash normalized remote-sync--projects)
+          (gethash (concat normalized "/") remote-sync--projects)
+          (gethash root remote-sync--projects)))))
 
 (defun projectile-pyenv--restart-lsp-if-needed ()
   "Restart LSP if active in current buffer."
