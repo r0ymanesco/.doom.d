@@ -296,14 +296,76 @@ Delegates to remote-sync for remote projects."
 
 ;; Remote-sync: seamless remote project editing with Mutagen
 (add-to-list 'load-path (expand-file-name "lisp" doom-user-dir))
-(require 'remote-sync)
+
+;; Defer loading until a command is invoked or a cached project file is opened
+(use-package! remote-sync
+  :defer t
+  :commands (remote-sync-clone
+             remote-sync-open-project
+             remote-sync-status
+             remote-sync-list-projects
+             remote-sync-remove-project
+             remote-sync-run
+             remote-sync-vterm
+             remote-sync-vterm-select
+             remote-sync-vterm-project
+             remote-sync-edit-ssh-config
+             remote-sync-stop-daemon
+             remote-sync-daemon-status
+             remote-sync-select-venv
+             remote-sync-detect-venv
+             remote-sync-show-venv)
+  :init
+  ;; Auto-load when opening files in the cache directory
+  (defun remote-sync--maybe-load ()
+    "Load remote-sync if opening a file in the cache directory."
+    (when (and buffer-file-name
+               (string-prefix-p (expand-file-name "~/.remote-sync/")
+                                (expand-file-name buffer-file-name)))
+      (require 'remote-sync)))
+  (add-hook 'find-file-hook #'remote-sync--maybe-load -90)  ; Run early, before LSP
+
+  ;; Define keybindings before package loads (triggers autoload)
+  (map! :leader
+        (:prefix ("R" . "remote-sync")
+         :desc "Clone remote project"    "c" #'remote-sync-clone
+         :desc "Open synced project"     "o" #'remote-sync-open-project
+         :desc "Sync status"             "s" #'remote-sync-status
+         :desc "List projects"           "l" #'remote-sync-list-projects
+         :desc "Remove project"          "d" #'remote-sync-remove-project
+         :desc "Run command"             "r" #'remote-sync-run
+         :desc "Terminal (smart)"        "t" #'remote-sync-vterm
+         :desc "Terminal (select host)"  "T" #'remote-sync-vterm-select
+         :desc "Terminal (project)"      "p" #'remote-sync-vterm-project
+         :desc "Edit SSH config"         "e" #'remote-sync-edit-ssh-config
+         :desc "Stop daemon"             "q" #'remote-sync-stop-daemon
+         :desc "Daemon status"           "?" #'remote-sync-daemon-status
+         :desc "Select virtualenv"       "v" #'remote-sync-select-venv
+         :desc "Detect virtualenv"       "V" #'remote-sync-detect-venv
+         :desc "Show current venv"       "i" #'remote-sync-show-venv)))
 
 ;; TRAMP optimizations for remote-sync
 (after! tramp
   (setq tramp-verbose 1)
+  ;; Use SSH ControlMaster for connection reuse
   (setq tramp-ssh-controlmaster-options
-        "-o ControlMaster=auto -o ControlPath='~/.ssh/sockets/%%r@%%h-%%p' -o ControlPersist=600"))
+        "-o ControlMaster=auto -o ControlPath='~/.ssh/sockets/%%r@%%h-%%p' -o ControlPersist=600")
+  ;; Don't create .tramp_history on remote
+  (setq tramp-histfile-override t))
 
+
+;; VTerm performance optimizations
+(after! vterm
+  ;; Limit scrollback to reduce memory usage and improve performance
+  (setq vterm-max-scrollback 5000)
+  ;; Faster input responsiveness (default is 0.1)
+  (setq vterm-timer-delay 0.01))
+
+;; Disable line numbers in vterm - this is a major source of lag
+(add-hook 'vterm-mode-hook
+          (lambda ()
+            (setq-local display-line-numbers nil)
+            (setq-local truncate-lines t)))
 
 ;; Claude code
 (use-package! claude-code-ide

@@ -826,6 +826,15 @@ Returns the venv path if found, nil otherwise."
          (t
           (remote-sync--set-project-venv local-root selection host)))))))
 
+(defun remote-sync--update-modeline-venv (venv-path host)
+  "Update modeline to show remote VENV-PATH on HOST."
+  (when (boundp 'pyvenv-virtual-env-name)
+    (let ((venv-name (file-name-nondirectory (directory-file-name venv-path))))
+      ;; Set buffer-local modeline indicator
+      (setq-local pyvenv-virtual-env-name (format "[%s] %s" host venv-name))
+      ;; Also set the full path variable for consistency
+      (setq-local pyvenv-virtual-env (format "/ssh:%s:%s" host venv-path)))))
+
 (defun remote-sync--set-project-venv (local-root venv-path host)
   "Set VENV-PATH as the virtualenv for project at LOCAL-ROOT on HOST."
   ;; Store in registry
@@ -838,6 +847,9 @@ Returns the venv path if found, nil otherwise."
     (setq-local lsp-pyright-venv-path (file-name-directory venv-path))
     (setq-local lsp-pyright-venv-directory (file-name-nondirectory venv-path))
     (setq-local lsp-pyright-python-executable-cmd python-path)
+
+    ;; Update modeline indicator
+    (remote-sync--update-modeline-venv venv-path host)
 
     ;; Write .dir-locals.el to the local cache so it persists
     (let ((dir-locals-file (expand-file-name ".dir-locals.el" local-root)))
@@ -889,49 +901,29 @@ Returns the venv path if found, nil otherwise."
   "Setup Python virtualenv for remote-sync projects."
   (when-let* ((local-root (ignore-errors (projectile-project-root)))
               (remote-tramp (remote-sync--local-to-remote local-root)))
-    ;; Check if we already have a venv configured
-    (if-let ((stored-venv (gethash local-root remote-sync--project-venvs)))
-        ;; Apply stored venv
-        (let ((python-path (format "%s/bin/python" stored-venv)))
-          (setq-local lsp-pyright-venv-path (file-name-directory stored-venv))
-          (setq-local lsp-pyright-venv-directory (file-name-nondirectory stored-venv))
-          (setq-local lsp-pyright-python-executable-cmd python-path))
-      ;; Try auto-detection (but don't prompt)
-      (with-parsed-tramp-file-name remote-tramp parsed
+    (with-parsed-tramp-file-name remote-tramp parsed
+      ;; Check if we already have a venv configured
+      (if-let ((stored-venv (gethash local-root remote-sync--project-venvs)))
+          ;; Apply stored venv
+          (let ((python-path (format "%s/bin/python" stored-venv)))
+            (setq-local lsp-pyright-venv-path (file-name-directory stored-venv))
+            (setq-local lsp-pyright-venv-directory (file-name-nondirectory stored-venv))
+            (setq-local lsp-pyright-python-executable-cmd python-path)
+            ;; Update modeline
+            (remote-sync--update-modeline-venv stored-venv parsed-host))
+        ;; Try auto-detection (but don't prompt)
         (when-let ((detected (remote-sync--detect-remote-venv parsed-host parsed-localname)))
           (let ((python-path (format "%s/bin/python" detected)))
             (puthash local-root detected remote-sync--project-venvs)
             (remote-sync--save-venv-registry)
             (setq-local lsp-pyright-venv-path (file-name-directory detected))
             (setq-local lsp-pyright-venv-directory (file-name-nondirectory detected))
-            (setq-local lsp-pyright-python-executable-cmd python-path)))))))
+            (setq-local lsp-pyright-python-executable-cmd python-path)
+            ;; Update modeline
+            (remote-sync--update-modeline-venv detected parsed-host)))))))
 
 ;; Note: Hooks are handled by config.el's projectile-pyenv-auto-activate
 ;; which delegates to remote-sync--maybe-setup-python-venv for remote projects
-
-;;; ============================================================
-;;; Keybindings (Doom Emacs)
-;;; ============================================================
-
-(with-eval-after-load 'doom-keybinds
-  (map! :leader
-        (:prefix ("R" . "remote-sync")
-         :desc "Clone remote project"    "c" #'remote-sync-clone
-         :desc "Open synced project"     "o" #'remote-sync-open-project
-         :desc "Sync status"             "s" #'remote-sync-status
-         :desc "List projects"           "l" #'remote-sync-list-projects
-         :desc "Remove project"          "d" #'remote-sync-remove-project
-         :desc "Run command"             "r" #'remote-sync-run
-         :desc "Terminal (smart)"        "t" #'remote-sync-vterm
-         :desc "Terminal (select host)"  "T" #'remote-sync-vterm-select
-         :desc "Terminal (project)"      "p" #'remote-sync-vterm-project
-         :desc "Edit SSH config"         "e" #'remote-sync-edit-ssh-config
-         :desc "Stop daemon"             "q" #'remote-sync-stop-daemon
-         :desc "Daemon status"           "?" #'remote-sync-daemon-status
-         ;; Python virtualenv
-         :desc "Select virtualenv"       "v" #'remote-sync-select-venv
-         :desc "Detect virtualenv"       "V" #'remote-sync-detect-venv
-         :desc "Show current venv"       "i" #'remote-sync-show-venv)))
 
 (provide 'remote-sync)
 ;;; remote-sync.el ends here
