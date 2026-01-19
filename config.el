@@ -66,9 +66,7 @@
   (when (and (bound-and-true-p remote-sync--projects)
              (projectile-project-p))
     (let* ((root (projectile-project-root))
-           ;; Normalize: remove trailing slash, expand
            (normalized (directory-file-name (expand-file-name root))))
-      ;; Try both with and without trailing slash
       (or (gethash normalized remote-sync--projects)
           (gethash (concat normalized "/") remote-sync--projects)
           (gethash root remote-sync--projects)))))
@@ -351,7 +349,9 @@ Delegates to remote-sync for remote projects."
   (setq tramp-ssh-controlmaster-options
         "-o ControlMaster=auto -o ControlPath='~/.ssh/sockets/%%r@%%h-%%p' -o ControlPersist=600")
   ;; Don't create .tramp_history on remote
-  (setq tramp-histfile-override t))
+  (setq tramp-histfile-override t)
+  ;; Shorter timeout so Emacs doesn't hang if remote goes offline
+  (setq tramp-connection-timeout 10))
 
 
 ;; VTerm performance optimizations
