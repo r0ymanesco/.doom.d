@@ -60,6 +60,13 @@
 (defvar projectile-pyenv--skipped-projects (make-hash-table :test 'equal)
   "Hash table of projects where user declined to set venv manually.")
 
+;; Helper to check if current project is a remote-sync project
+(defun projectile-pyenv--remote-sync-project-p ()
+  "Return remote TRAMP path if in a remote-sync project, nil otherwise."
+  (when (and (bound-and-true-p remote-sync--projects)
+             (projectile-project-p))
+    (gethash (projectile-project-root) remote-sync--projects)))
+
 (defun projectile-pyenv--restart-lsp-if-needed ()
   "Restart LSP if active in current buffer."
   (when (and (bound-and-true-p lsp-mode)
@@ -171,55 +178,74 @@
             (call-interactively 'projectile-pyenv-set-manual-venv)
           (puthash project-root t projectile-pyenv--skipped-projects))))))
 
-(defun projectile-pyenv-set-manual-venv (venv-path)
-  "Manually set a virtualenv by entering its path."
-  (interactive
-   (list (read-directory-name "Path to virtualenv: "
-                              (or (projectile-project-root) default-directory)
-                              nil t)))
-  (let ((expanded-path (expand-file-name venv-path))
-        (project-root (projectile-project-root)))
-    (if (and (file-directory-p expanded-path)
-             (or (file-exists-p (expand-file-name "bin/python" expanded-path))
-                 (file-exists-p (expand-file-name "Scripts/python.exe" expanded-path))))
-        (progn
-          (when (bound-and-true-p pyvenv-virtual-env)
-            (pyvenv-deactivate))
-          (pyenv-mode-unset)
-          (pyvenv-activate expanded-path)
-          (setq projectile-pyenv--last-project project-root)
-          ;; Store in hash table
-          (puthash project-root expanded-path projectile-pyenv--manual-venvs)
-          ;; Restart LSP
-          (projectile-pyenv--restart-lsp-if-needed)
-          (message "[venv] Manually activated: %s" expanded-path))
-      (error "[venv] Invalid virtualenv path: %s (no python executable found)" expanded-path))))
+(defun projectile-pyenv-set-manual-venv ()
+  "Manually set a virtualenv. Delegates to remote-sync for remote projects."
+  (interactive)
+  (if (projectile-pyenv--remote-sync-project-p)
+      ;; Remote project - use remote-sync selection
+      (if (fboundp 'remote-sync-select-venv)
+          (remote-sync-select-venv)
+        (user-error "remote-sync not loaded"))
+    ;; Local project - use local selection
+    (let* ((venv-path (read-directory-name "Path to virtualenv: "
+                                           (or (projectile-project-root) default-directory)
+                                           nil t))
+           (expanded-path (expand-file-name venv-path))
+           (project-root (projectile-project-root)))
+      (if (and (file-directory-p expanded-path)
+               (or (file-exists-p (expand-file-name "bin/python" expanded-path))
+                   (file-exists-p (expand-file-name "Scripts/python.exe" expanded-path))))
+          (progn
+            (when (bound-and-true-p pyvenv-virtual-env)
+              (pyvenv-deactivate))
+            (pyenv-mode-unset)
+            (pyvenv-activate expanded-path)
+            (setq projectile-pyenv--last-project project-root)
+            ;; Store in hash table
+            (puthash project-root expanded-path projectile-pyenv--manual-venvs)
+            ;; Restart LSP
+            (projectile-pyenv--restart-lsp-if-needed)
+            (message "[venv] Manually activated: %s" expanded-path))
+        (error "[venv] Invalid virtualenv path: %s (no python executable found)" expanded-path)))))
 
 (defun projectile-pyenv-show-current-venv ()
   "Display the currently active Python virtualenv path."
   (interactive)
-  (if (and (boundp 'pyvenv-virtual-env) pyvenv-virtual-env)
-      (message "[venv] Current virtualenv: %s" pyvenv-virtual-env)
-    (message "[venv] No Python virtualenv currently active")))
+  (if (projectile-pyenv--remote-sync-project-p)
+      ;; Remote project - show remote venv
+      (if (fboundp 'remote-sync-show-venv)
+          (remote-sync-show-venv)
+        (message "[venv] remote-sync not loaded"))
+    ;; Local project - show local venv
+    (if (and (boundp 'pyvenv-virtual-env) pyvenv-virtual-env)
+        (message "[venv] Current virtualenv: %s" pyvenv-virtual-env)
+      (message "[venv] No Python virtualenv currently active"))))
 
 (defun projectile-pyenv-auto-activate ()
-  "Auto-activate Python virtualenv when opening a Python file in a new project."
+  "Auto-activate Python virtualenv when opening a Python file in a new project.
+Delegates to remote-sync for remote projects."
   (when (and (projectile-project-p)
              (not (equal (projectile-project-root)
                          projectile-pyenv--last-project)))
-    (let* ((project-root (projectile-project-root))
-           (manual-venv (gethash project-root projectile-pyenv--manual-venvs)))
+    (let ((project-root (projectile-project-root)))
       (setq projectile-pyenv--last-project project-root)
-      (if manual-venv
-          ;; Restore manually set venv
-          (progn
-            (when (bound-and-true-p pyvenv-virtual-env)
-              (pyvenv-deactivate))
-            (pyvenv-activate manual-venv)
-            (projectile-pyenv--restart-lsp-if-needed)
-            (message "[venv] Restored manual venv: %s" manual-venv))
-        ;; Auto-detect venv
-        (projectile-pyenv-mode-set)))))
+      ;; Check if this is a remote-sync project
+      (if (projectile-pyenv--remote-sync-project-p)
+          ;; Remote project - use remote-sync venv management
+          (when (fboundp 'remote-sync--maybe-setup-python-venv)
+            (remote-sync--maybe-setup-python-venv))
+        ;; Local project - use local venv management
+        (let ((manual-venv (gethash project-root projectile-pyenv--manual-venvs)))
+          (if manual-venv
+              ;; Restore manually set venv
+              (progn
+                (when (bound-and-true-p pyvenv-virtual-env)
+                  (pyvenv-deactivate))
+                (pyvenv-activate manual-venv)
+                (projectile-pyenv--restart-lsp-if-needed)
+                (message "[venv] Restored manual venv: %s" manual-venv))
+            ;; Auto-detect venv
+            (projectile-pyenv-mode-set)))))))
 
 (add-hook 'python-mode-hook #'projectile-pyenv-auto-activate)
 (add-hook 'python-ts-mode-hook #'projectile-pyenv-auto-activate)
@@ -260,6 +286,17 @@
   (aidermacs-editor-model "gpt-5.2")
   (aidermacs-weak-model "gpt-5.2")
   )
+
+
+;; Remote-sync: seamless remote project editing with Mutagen
+(add-to-list 'load-path (expand-file-name "lisp" doom-user-dir))
+(require 'remote-sync)
+
+;; TRAMP optimizations for remote-sync
+(after! tramp
+  (setq tramp-verbose 1)
+  (setq tramp-ssh-controlmaster-options
+        "-o ControlMaster=auto -o ControlPath='~/.ssh/sockets/%%r@%%h-%%p' -o ControlPersist=600"))
 
 
 ;; Claude code
