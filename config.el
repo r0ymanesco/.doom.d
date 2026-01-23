@@ -298,11 +298,13 @@ Delegates to remote-sync for remote projects."
 ;; Defer loading until a command is invoked or a cached project file is opened
 (use-package! remote-sync
   :defer t
-  :commands (remote-sync-clone
+  :commands (remote-sync-open
+             remote-sync-clone
              remote-sync-open-project
              remote-sync-status
              remote-sync-list-projects
              remote-sync-remove-project
+             remote-sync-cleanup
              remote-sync-run
              remote-sync-vterm
              remote-sync-vterm-select
@@ -326,11 +328,12 @@ Delegates to remote-sync for remote projects."
   ;; Define keybindings before package loads (triggers autoload)
   (map! :leader
         (:prefix ("R" . "remote-sync")
-         :desc "Clone remote project"    "c" #'remote-sync-clone
-         :desc "Open synced project"     "o" #'remote-sync-open-project
+         :desc "Open remote project"     "o" #'remote-sync-open
+         :desc "Open synced project"     "O" #'remote-sync-open-project
          :desc "Sync status"             "s" #'remote-sync-status
          :desc "List projects"           "l" #'remote-sync-list-projects
          :desc "Remove project"          "d" #'remote-sync-remove-project
+         :desc "Cleanup expired"         "x" #'remote-sync-cleanup
          :desc "Run command"             "r" #'remote-sync-run
          :desc "Terminal (smart)"        "t" #'remote-sync-vterm
          :desc "Terminal (select host)"  "T" #'remote-sync-vterm-select
@@ -340,19 +343,184 @@ Delegates to remote-sync for remote projects."
          :desc "Daemon status"           "?" #'remote-sync-daemon-status
          :desc "Select virtualenv"       "v" #'remote-sync-select-venv
          :desc "Detect virtualenv"       "V" #'remote-sync-detect-venv
-         :desc "Show current venv"       "i" #'remote-sync-show-venv)))
+         :desc "Show current venv"       "i" #'remote-sync-show-venv
+         :desc "Disconnect TRAMP"        "D" #'my/tramp-disconnect-all)))
 
 ;; TRAMP optimizations for remote-sync
 (after! tramp
   (setq tramp-verbose 1)
-  ;; Use SSH ControlMaster for connection reuse
+  ;; Use SSH ControlMaster for connection reuse, with shorter timeouts
   (setq tramp-ssh-controlmaster-options
-        "-o ControlMaster=auto -o ControlPath='~/.ssh/sockets/%%r@%%h-%%p' -o ControlPersist=600")
+        (concat "-o ControlMaster=auto "
+                "-o ControlPath='~/.ssh/sockets/%%r@%%h-%%p' "
+                "-o ControlPersist=600 "
+                "-o ConnectTimeout=5 "
+                "-o ServerAliveInterval=5 "
+                "-o ServerAliveCountMax=2"))
   ;; Don't create .tramp_history on remote
   (setq tramp-histfile-override t)
-  ;; Shorter timeout so Emacs doesn't hang if remote goes offline
-  (setq tramp-connection-timeout 10))
+  ;; Shorter timeout so Emacs doesn't hang if remote goes offline (5 seconds)
+  (setq tramp-connection-timeout 5)
+  ;; Set remote path with pyenv paths first
+  (setq tramp-remote-path
+        '("/home/ubuntu/.pyenv/shims"
+          "/home/ubuntu/.pyenv/bin"
+          tramp-own-remote-path
+          tramp-default-remote-path
+          "/bin" "/usr/bin" "/sbin" "/usr/sbin"
+          "/usr/local/bin" "/usr/local/sbin"))
 
+  ;; Use connection-local variables to ensure PATH is set correctly for AWS hosts
+  (connection-local-set-profile-variables
+   'remote-ec2-profile
+   '((tramp-remote-path . ("/home/ubuntu/.pyenv/shims"
+                           "/home/ubuntu/.pyenv/bin"
+                           tramp-own-remote-path
+                           tramp-default-remote-path
+                           "/bin" "/usr/bin" "/sbin" "/usr/sbin"
+                           "/usr/local/bin" "/usr/local/sbin"))))
+
+  ;; Apply profile to connections
+  (connection-local-set-profiles
+   '(:application tramp :protocol "ssh" :machine "ec2-.*\\.compute.*\\.amazonaws\\.com")
+   'remote-ec2-profile))
+
+;; Quick command to kill all TRAMP connections when remote is down
+(defun my/tramp-disconnect-all ()
+  "Immediately disconnect all TRAMP connections.
+Use this when you know the remote is down to avoid waiting for timeout."
+  (interactive)
+  (tramp-cleanup-all-connections)
+  (tramp-cleanup-all-buffers)
+  (message "All TRAMP connections disconnected"))
+
+;; Track which remote projects have been explicitly opened this session
+(defvar my/lsp-enabled-remote-projects (make-hash-table :test 'equal)
+  "Remote projects where LSP has been explicitly enabled this session.")
+
+;; Flag to indicate we're currently opening a remote project
+(defvar my/lsp-opening-remote-project nil
+  "Non-nil when actively opening a remote project via remote-sync or projectile.")
+
+;; LSP auto-start prevention temporarily disabled for debugging
+;; (defun my/lsp-maybe-defer-remote ()
+;;   "Prevent LSP from auto-starting on remote projects not opened this session."
+;;   (when (and buffer-file-name
+;;              (not my/lsp-opening-remote-project)
+;;              (string-prefix-p (expand-file-name "~/.remote-sync/")
+;;                               (expand-file-name buffer-file-name)))
+;;     (let ((project-root (or (projectile-project-root) default-directory)))
+;;       (unless (gethash project-root my/lsp-enabled-remote-projects)
+;;         (setq-local lsp-disabled-clients '(pyright pyright-remote ruff ty-ls pylsp pyls semgrep-ls))))))
+;; (add-hook 'hack-local-variables-hook #'my/lsp-maybe-defer-remote)
+
+;; Enable LSP for remote project when opened via remote-sync
+(defun my/lsp-enable-for-remote-project ()
+  "Mark current remote project as LSP-enabled for this session."
+  (when-let ((root (projectile-project-root)))
+    (when (string-prefix-p (expand-file-name "~/.remote-sync/")
+                           (expand-file-name root))
+      (puthash root t my/lsp-enabled-remote-projects))))
+
+;; Set flag BEFORE remote-sync loads (catches first call)
+(advice-add 'remote-sync-open :before
+            (lambda (&rest _)
+              (setq my/lsp-opening-remote-project t)))
+(advice-add 'remote-sync-open-project :before
+            (lambda (&rest _)
+              (setq my/lsp-opening-remote-project t)))
+
+;; Advise remote-sync-open to enable LSP for opened projects (after load)
+(with-eval-after-load 'remote-sync
+  (advice-add 'remote-sync-open :after
+              (lambda (&rest _)
+                (my/lsp-enable-for-remote-project)
+                (run-with-timer 2 nil (lambda () (setq my/lsp-opening-remote-project nil)))))
+  (advice-add 'remote-sync-open-project :after
+              (lambda (&rest _)
+                (my/lsp-enable-for-remote-project)
+                (run-with-timer 2 nil (lambda () (setq my/lsp-opening-remote-project nil))))))
+
+;; Also enable LSP when switching to remote project via projectile (SPC p p)
+(defun my/lsp-enable-on-projectile-switch (project-path)
+  "Enable LSP for remote PROJECT-PATH when switched via projectile."
+  (when (and project-path
+             (string-prefix-p (expand-file-name "~/.remote-sync/")
+                              (expand-file-name project-path)))
+    ;; Set the flag globally and clear after delay
+    (setq my/lsp-opening-remote-project t)
+    (puthash (expand-file-name project-path) t my/lsp-enabled-remote-projects)
+    ;; Clear flag after 2 seconds to allow time for files to open
+    (run-with-timer 2 nil (lambda () (setq my/lsp-opening-remote-project nil)))))
+
+;; Advise multiple projectile functions to catch project switches
+(advice-add 'projectile-switch-project-by-name :before
+            (lambda (project-path &rest _)
+              (my/lsp-enable-on-projectile-switch project-path)))
+
+;; Also advise projectile-switch-project (the interactive command)
+(advice-add 'projectile-switch-project :after
+            (lambda (&rest _)
+              (when-let ((root (projectile-project-root)))
+                (my/lsp-enable-on-projectile-switch root))))
+
+;; And counsel-projectile-switch-project if using ivy
+(with-eval-after-load 'counsel-projectile
+  ;; Set flag BEFORE switch so it's active when files open
+  (advice-add 'counsel-projectile-switch-project :before
+              (lambda (&rest _)
+                (setq my/lsp-opening-remote-project t)))
+  ;; After switch, add to hash table and clear flag after delay
+  (advice-add 'counsel-projectile-switch-project :after
+              (lambda (&rest _)
+                (when-let ((root (projectile-project-root)))
+                  (my/lsp-enable-on-projectile-switch root))
+                (run-with-timer 2 nil (lambda () (setq my/lsp-opening-remote-project nil))))))
+
+;; Set default-directory to remote path EARLY so LSP can find executables
+(defun my/use-remote-default-directory ()
+  "Set default-directory to remote TRAMP path for remote-sync projects.
+This must run BEFORE LSP starts so executable-find works correctly."
+  (when (and buffer-file-name
+             (string-prefix-p (expand-file-name "~/.remote-sync/")
+                              (expand-file-name buffer-file-name))
+             (fboundp 'remote-sync--local-to-remote))
+    (when-let ((remote-path (remote-sync--local-to-remote default-directory)))
+      (setq-local default-directory remote-path))))
+
+;; Add to hook with high priority (runs early)
+(add-hook 'python-mode-hook #'my/use-remote-default-directory -90)
+(add-hook 'python-ts-mode-hook #'my/use-remote-default-directory -90)
+
+
+;; Configure LSP for remote-sync projects
+(after! lsp-mode
+  ;; Disable ty-ls globally so pyright is used
+  (add-to-list 'lsp-disabled-clients 'ty-ls)
+  ;; Disable our custom pyright-remote client - use default pyright
+  (add-to-list 'lsp-disabled-clients 'pyright-remote)
+  ;; Skip automatic server installation prompts
+  (setq lsp-enable-suggest-server-download nil))
+
+
+;; LSP optimizations for remote projects only (reduce blocking)
+(defun my/lsp-remote-optimizations ()
+  "Apply LSP optimizations for remote files to reduce lag."
+  (when (and buffer-file-name
+             (string-prefix-p (expand-file-name "~/.remote-sync/")
+                              (expand-file-name buffer-file-name)))
+    ;; Longer delay before LSP acts after typing
+    (setq-local lsp-idle-delay 0.8)
+    ;; Disable on-type formatting (keystroke triggers server call)
+    (setq-local lsp-enable-on-type-formatting nil)
+    ;; Use Emacs indentation instead of LSP
+    (setq-local lsp-enable-indentation nil)
+    ;; Disable breadcrumb
+    (setq-local lsp-headerline-breadcrumb-enable nil)
+    ;; Require more chars before completion triggers
+    (setq-local company-minimum-prefix-length 3)))
+
+(add-hook 'lsp-mode-hook #'my/lsp-remote-optimizations)
 
 ;; VTerm performance optimizations
 (after! vterm

@@ -47,14 +47,45 @@
   :type 'file
   :group 'remote-sync)
 
+(defcustom remote-sync-project-expiry-days 7
+  "Number of days after which unused projects are considered expired.
+Set to nil to disable automatic expiration."
+  :type '(choice (integer :tag "Days")
+                 (const :tag "Never expire" nil))
+  :group 'remote-sync)
+
 (defvar remote-sync--projects (make-hash-table :test 'equal)
-  "Map local cache paths to remote TRAMP paths.")
+  "Map local cache paths to (remote-tramp-path . last-accessed-time).")
 
 (defun remote-sync--hash-to-alist (table)
   "Convert hash TABLE to an alist."
   (let (alist)
     (maphash (lambda (k v) (push (cons k v) alist)) table)
     alist))
+
+;;; ============================================================
+;;; Project Registry Helpers
+;;; ============================================================
+
+(defun remote-sync--get-remote-path (local-path)
+  "Get remote TRAMP path for LOCAL-PATH from registry."
+  (when-let ((entry (gethash local-path remote-sync--projects)))
+    (if (consp entry) (car entry) entry)))  ; Handle both old and new format
+
+(defun remote-sync--get-last-accessed (local-path)
+  "Get last accessed time for LOCAL-PATH from registry."
+  (when-let ((entry (gethash local-path remote-sync--projects)))
+    (if (consp entry) (cdr entry) nil)))
+
+(defun remote-sync--set-project (local-path remote-path)
+  "Register LOCAL-PATH with REMOTE-PATH and update access time."
+  (puthash local-path (cons remote-path (current-time)) remote-sync--projects))
+
+(defun remote-sync--touch-project (local-path)
+  "Update last accessed time for LOCAL-PATH."
+  (when-let ((remote-path (remote-sync--get-remote-path local-path)))
+    (puthash local-path (cons remote-path (current-time)) remote-sync--projects)
+    (remote-sync--save-registry)))
 
 ;;; ============================================================
 ;;; SSH Config & Host Management
@@ -156,8 +187,8 @@ Expands tilde to full home directory path for TRAMP compatibility."
                               (expand-file-name local-path)))
     (let ((expanded (expand-file-name local-path)))
       (cl-loop for local being the hash-keys of remote-sync--projects
-               using (hash-values remote)
-               when (string-prefix-p local expanded)
+               for remote = (remote-sync--get-remote-path local)
+               when (and remote (string-prefix-p local expanded))
                return (concat remote (substring expanded (length local)))))))
 
 (defun remote-sync--project-info (local-path)
@@ -280,16 +311,16 @@ Returns selected directory path or nil if cancelled."
 (defun remote-sync--project-already-cloned-p (host remote-path)
   "Check if project at REMOTE-PATH from HOST is already cloned locally."
   (cl-loop for local being the hash-keys of remote-sync--projects
-           using (hash-values remote)
-           when (string= remote (remote-sync--tramp-path host remote-path))
+           for remote = (remote-sync--get-remote-path local)
+           when (and remote (string= remote (remote-sync--tramp-path host remote-path)))
            return local))
 
 ;;;###autoload
-(defun remote-sync-clone ()
-  "Clone a remote project for local editing.
-Browse remote filesystem starting from home directory."
+(defun remote-sync-open ()
+  "Open a remote project. Syncs automatically if not already cloned.
+Browse remote filesystem to select a project."
   (interactive)
-  (when-let ((host (remote-sync--select-host "Clone from host: ")))
+  (when-let ((host (remote-sync--select-host "Open from host: ")))
     (let ((method (completing-read
                    "How to find project? "
                    '("Browse from home directory"
@@ -311,9 +342,13 @@ Browse remote filesystem starting from home directory."
                      (read-string "Remote path: " "~/")))))
         (if-let ((existing (remote-sync--project-already-cloned-p host remote-path)))
             (progn
-              (message "Already synced at %s" existing)
+              (message "Opening synced project: %s" existing)
+              (remote-sync--touch-project existing)
               (projectile-switch-project-by-name existing))
           (remote-sync--do-clone host remote-path))))))
+
+;; Keep old name as alias for compatibility
+(defalias 'remote-sync-clone 'remote-sync-open)
 
 (defun remote-sync--expand-remote-path (host path)
   "Expand PATH for remote HOST, converting ~ to full home directory."
@@ -362,9 +397,8 @@ Browse remote filesystem starting from home directory."
           (pop-to-buffer buf))
         (user-error "Failed to create mutagen sync - see *mutagen-error* buffer")))
 
-    ;; Register the project
-    (puthash local-path (remote-sync--tramp-path host remote-path)
-             remote-sync--projects)
+    ;; Register the project with timestamp
+    (remote-sync--set-project local-path (remote-sync--tramp-path host remote-path))
     (remote-sync--save-registry)
 
     ;; Wait for initial sync
@@ -520,13 +554,71 @@ Otherwise, prompts to select a host."
           (let ((alist (read (current-buffer))))
             (clrhash remote-sync--projects)
             (dolist (pair alist)
-              (puthash (car pair) (cdr pair) remote-sync--projects))))
+              (let ((local-path (car pair))
+                    (value (cdr pair)))
+                ;; Handle both old format (string) and new format (cons)
+                (if (consp value)
+                    (puthash local-path value remote-sync--projects)
+                  ;; Old format: just remote-path, add current time
+                  (puthash local-path (cons value (current-time)) remote-sync--projects))))))
       (error
        (message "Warning: Could not load remote-sync registry: %s"
                 (error-message-string err))))))
 
-;; Load registry on startup
+(defun remote-sync--project-expired-p (local-path)
+  "Check if project at LOCAL-PATH has expired."
+  (when remote-sync-project-expiry-days
+    (when-let ((last-accessed (remote-sync--get-last-accessed local-path)))
+      (> (float-time (time-subtract (current-time) last-accessed))
+         (* remote-sync-project-expiry-days 24 60 60)))))
+
+(defun remote-sync--cleanup-expired-projects ()
+  "Remove expired projects from registry and optionally delete local files."
+  (let ((expired-projects '()))
+    ;; Find expired projects
+    (maphash (lambda (local-path _)
+               (when (remote-sync--project-expired-p local-path)
+                 (push local-path expired-projects)))
+             remote-sync--projects)
+    ;; Remove them
+    (when expired-projects
+      (dolist (local-path expired-projects)
+        (let* ((project-name (file-name-nondirectory (directory-file-name local-path)))
+               (sync-name (downcase
+                           (replace-regexp-in-string
+                            "[^a-zA-Z0-9]+" "-"
+                            (file-name-nondirectory (directory-file-name local-path))))))
+          ;; Terminate mutagen sync (ignore errors - host may be gone)
+          (ignore-errors
+            (shell-command (format "mutagen sync terminate %s 2>/dev/null" sync-name)))
+          ;; Remove local cache if it exists
+          (when (file-exists-p local-path)
+            (delete-directory local-path t))
+          ;; Remove from registry
+          (remhash local-path remote-sync--projects)
+          ;; Also remove from venvs registry
+          (when (boundp 'remote-sync--project-venvs)
+            (remhash local-path remote-sync--project-venvs))
+          ;; Remove from projectile known projects
+          (when (fboundp 'projectile-remove-known-project)
+            (projectile-remove-known-project local-path))
+          (message "Cleaned up expired project: %s" project-name)))
+      (remote-sync--save-registry)
+      (when (boundp 'remote-sync--project-venvs)
+        (remote-sync--save-venv-registry))
+      (message "Cleaned up %d expired project(s)" (length expired-projects)))))
+
+;;;###autoload
+(defun remote-sync-cleanup ()
+  "Manually clean up expired projects."
+  (interactive)
+  (remote-sync--cleanup-expired-projects)
+  (message "Cleanup complete"))
+
+;; Load registry on startup and clean up expired projects
 (remote-sync--load-registry)
+(when remote-sync-project-expiry-days
+  (remote-sync--cleanup-expired-projects))
 
 ;;; ============================================================
 ;;; Mutagen Daemon Management
@@ -615,6 +707,13 @@ Otherwise, prompts to select a host."
           ;; Remove from registry
           (remhash local-path remote-sync--projects)
           (remote-sync--save-registry)
+          ;; Remove from projectile known projects
+          (when (fboundp 'projectile-remove-known-project)
+            (projectile-remove-known-project local-path))
+          ;; Remove from venvs registry
+          (when (boundp 'remote-sync--project-venvs)
+            (remhash local-path remote-sync--project-venvs)
+            (remote-sync--save-venv-registry))
           ;; Optionally delete local cache
           (when (and (file-exists-p local-path)
                      (yes-or-no-p "Delete local cached files? "))
@@ -647,8 +746,8 @@ Otherwise, prompts to select a host."
   "Open an already-synced project."
   (interactive)
   (if (hash-table-empty-p remote-sync--projects)
-      (when (yes-or-no-p "No synced projects. Clone one now? ")
-        (remote-sync-clone))
+      (when (yes-or-no-p "No synced projects. Open one from remote? ")
+        (remote-sync-open))
     (let* ((projects (hash-table-keys remote-sync--projects))
            (display-projects (mapcar (lambda (p)
                                        (cons (file-name-nondirectory
@@ -659,6 +758,8 @@ Otherwise, prompts to select a host."
                                        (mapcar #'car display-projects)
                                        nil t))
            (local-path (cdr (assoc selection display-projects))))
+      ;; Update last accessed time
+      (remote-sync--touch-project local-path)
       (projectile-switch-project-by-name local-path))))
 
 ;;; ============================================================
