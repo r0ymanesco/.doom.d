@@ -26,7 +26,7 @@
 ;; There are two ways to load a theme. Both assume the theme is installed and
 ;; available. You can either set `doom-theme' or manually load a theme with the
 ;; `load-theme' function. This is the default:
-(setq doom-theme 'doom-challenger-deep)
+(setq doom-theme 'doom-dracula)
 
 
 ;; This fixes the pound key issue on UK MacOS keyboards
@@ -499,8 +499,11 @@ This must run BEFORE LSP starts so executable-find works correctly."
   (add-to-list 'lsp-disabled-clients 'ty-ls)
   ;; Disable our custom pyright-remote client - use default pyright
   (add-to-list 'lsp-disabled-clients 'pyright-remote)
+  ;; Disable ruff LSP so it doesn't run alongside pyright
+  (add-to-list 'lsp-disabled-clients 'ruff)
   ;; Skip automatic server installation prompts
   (setq lsp-enable-suggest-server-download nil))
+
 
 
 ;; LSP optimizations for remote projects only (reduce blocking)
@@ -538,6 +541,7 @@ This must run BEFORE LSP starts so executable-find works correctly."
 ;; Claude code
 (use-package! claude-code-ide
   :config
+  (setq claude-code-ide-vterm-anti-flicker nil)
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (map! :map vterm-mode-map
         "S-<return>" #'claude-code-ide-insert-newline)

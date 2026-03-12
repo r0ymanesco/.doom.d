@@ -20,6 +20,7 @@
 (package! biblio)
 (package! ox-hugo)
 (package! magit-todos)
+(package! hydra)
 (package! ranger)
 (package! transient)
 (package! aidermacs)
