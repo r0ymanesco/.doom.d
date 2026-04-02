@@ -37,7 +37,8 @@
 (defcustom remote-sync-ignores
   '("node_modules" "__pycache__" ".venv" "venv"
     "target" "build" "dist" ".cache" "*.pyc" ".DS_Store"
-    ".mypy_cache" ".pytest_cache" ".tox" "*.egg-info")
+    ".mypy_cache" ".pytest_cache" ".tox" "*.egg-info"
+    ".mcp.json" "CLAUDE.md")
   "Patterns to ignore in sync."
   :type '(repeat string)
   :group 'remote-sync)
@@ -356,6 +357,32 @@ Browse remote filesystem to select a project."
       (concat "/home/" (remote-sync--get-remote-user host) (substring path 1))
     path))
 
+(defun remote-sync--maybe-write-claude-md (local-path host remote-path)
+  "Write CLAUDE.md and .mcp.json to LOCAL-PATH for Claude Code integration.
+Only writes each file if it doesn't already exist."
+  (let ((claude-md (expand-file-name "CLAUDE.md" local-path))
+        (mcp-json (expand-file-name ".mcp.json" local-path)))
+    (unless (file-exists-p claude-md)
+      (with-temp-file claude-md
+        (insert (format "# Remote Project: %s:%s\n\n" host remote-path))
+        (insert "Files are synced locally via Mutagen. Edits happen on local files.\n\n")
+        (insert "## Command Execution\n\n")
+        (insert "**All shell commands** (build, test, run, install deps, git, etc.) ")
+        (insert "MUST use the `remote_exec` MCP tool, NOT the Bash tool.\n")
+        (insert "The Bash tool runs locally; this project runs on the remote machine.\n\n")
+        (insert (format "Set `working_dir` to: `%s`\n" local-path))))
+    (unless (file-exists-p mcp-json)
+      (with-temp-file mcp-json
+        (insert "{\n")
+        (insert "  \"mcpServers\": {\n")
+        (insert "    \"remote-sync\": {\n")
+        (insert "      \"command\": \"python3\",\n")
+        (insert (format "      \"args\": [\"%s\"]\n"
+                        (expand-file-name "mcp-server.py" remote-sync-cache-directory)))
+        (insert "    }\n")
+        (insert "  }\n")
+        (insert "}\n")))))
+
 (defun remote-sync--do-clone (host remote-path)
   "Clone project from HOST at REMOTE-PATH."
   ;; Ensure Mutagen daemon is running
@@ -404,6 +431,9 @@ Browse remote filesystem to select a project."
     ;; Wait for initial sync
     (message "Waiting for initial sync (this may take a moment)...")
     (shell-command (format "mutagen sync flush %s 2>/dev/null" sync-name))
+
+    ;; Generate CLAUDE.md for Claude Code (after sync, so we don't overwrite remote's copy)
+    (remote-sync--maybe-write-claude-md local-path host expanded-remote-path)
 
     ;; Open project
     (projectile-switch-project-by-name local-path)

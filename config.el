@@ -530,13 +530,16 @@ This must run BEFORE LSP starts so executable-find works correctly."
   ;; Limit scrollback to reduce memory usage and improve performance
   (setq vterm-max-scrollback 5000)
   ;; Faster input responsiveness (default is 0.1)
-  (setq vterm-timer-delay 0.01))
+  (setq vterm-timer-delay 0.05))
 
 ;; Disable line numbers in vterm - this is a major source of lag
 (add-hook 'vterm-mode-hook
           (lambda ()
             (setq-local display-line-numbers nil)
-            (setq-local truncate-lines t)))
+            (setq-local truncate-lines t)
+            ;; Limit scrollback for claude-code buffers to reduce reflow jumping
+            (when (string-match-p "\\*claude-code\\[" (buffer-name))
+              (setq-local vterm-max-scrollback 1000))))
 
 ;; Claude code
 (use-package! claude-code-ide
