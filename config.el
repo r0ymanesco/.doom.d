@@ -22,6 +22,7 @@
 ;; (setq doom-font (font-spec :family "monospace" :size 12 :weight 'semi-light)
 ;;       doom-variable-pitch-font (font-spec :family "sans" :size 13))
 
+(setq doom-font (font-spec :size 16))
 
 ;; There are two ways to load a theme. Both assume the theme is installed and
 ;; available. You can either set `doom-theme' or manually load a theme with the
@@ -38,7 +39,7 @@
   :config
   (when (or (memq window-system '(mac ns x))
             (daemonp))
-    (exec-path-from-shell-copy-envs '("OPENAI_API_KEY" "OPENROUTER_API_KEY"))
+    (exec-path-from-shell-copy-envs '("OPENAI_API_KEY" "OPENROUTER_API_KEY" "ANTHROPIC_API_KEY" "AWS_BEARER_TOKEN_BEDROCK"))
     (exec-path-from-shell-initialize)))
 
 
@@ -544,6 +545,11 @@ This must run BEFORE LSP starts so executable-find works correctly."
 ;; Claude code
 (use-package! claude-code-ide
   :config
+  (setenv "CLAUDE_CODE_USE_BEDROCK" "1")
+  (setenv "ANTHROPIC_MODEL" "us.anthropic.claude-opus-4-7")
+  (setenv "ANTHROPIC_SMALL_FAST_MODEL" "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+  ;; Sonnet 4.6: us.anthropic.claude-sonnet-4-6
+  (setenv "ANTHROPIC_CUSTOM_HEADERS" "anthropic-beta: context-1m-2025-08-07")
   (setq claude-code-ide-vterm-anti-flicker nil)
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (map! :map vterm-mode-map
