@@ -551,6 +551,7 @@ This must run BEFORE LSP starts so executable-find works correctly."
   ;; Sonnet 4.6: us.anthropic.claude-sonnet-4-6
   (setenv "ANTHROPIC_CUSTOM_HEADERS" "anthropic-beta: context-1m-2025-08-07")
   (setq claude-code-ide-vterm-anti-flicker nil)
+  (setq claude-code-ide-cli-path "notdiamond-claude")
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (map! :map vterm-mode-map
         "S-<return>" #'claude-code-ide-insert-newline)
