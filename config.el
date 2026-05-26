@@ -601,11 +601,16 @@ Updates the variable and resizes the live window if visible."
       :desc "Setup Emacs tools" "E" #'claude-code-ide-emacs-tools-setup
 ) 
 
+;; Markdown
+(after! markdown-mode
+  (add-hook 'markdown-mode-hook
+            (lambda ()
+              (markdown-toggle-markup-hiding 1)
+              (markdown-toggle-inline-images))))
 
 ;; Ranger
 ;; (ranger-override-dired-mode t)
 (map! :leader :prefix "o" :desc "ranger" "D" #'ranger)
-
 
 ;; Org
 ;; If you use `org' and don't want your org files in the default location below,
