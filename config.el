@@ -22,7 +22,7 @@
 ;; (setq doom-font (font-spec :family "monospace" :size 12 :weight 'semi-light)
 ;;       doom-variable-pitch-font (font-spec :family "sans" :size 13))
 
-(setq doom-font (font-spec :size 16))
+(setq doom-font (font-spec :size 18))
 
 ;; There are two ways to load a theme. Both assume the theme is installed and
 ;; available. You can either set `doom-theme' or manually load a theme with the
@@ -543,15 +543,38 @@ This must run BEFORE LSP starts so executable-find works correctly."
               (setq-local vterm-max-scrollback 1000))))
 
 ;; Claude code
+(defvar claude-code-ide-width-narrow 100)
+(defvar claude-code-ide-width-wide 150)
+
+(defun claude-code-ide-toggle-width ()
+  "Toggle claude-code-ide window width between narrow and wide.
+Updates the variable and resizes the live window if visible."
+  (interactive)
+  (let ((new-width (if (= claude-code-ide-window-width claude-code-ide-width-wide)
+                       claude-code-ide-width-narrow
+                     claude-code-ide-width-wide)))
+    (setq claude-code-ide-window-width new-width)
+    ;; Resize the live claude-code-ide window if one is showing
+    (dolist (win (window-list))
+      (let ((buf (window-buffer win)))
+        (when (and buf (string-match-p "\\*claude-code\\[" (buffer-name buf)))
+          (let ((delta (- new-width (window-body-width win))))
+            (when (window-resizable-p win delta t)
+              (window-resize win delta t))))))
+    (message "Claude Code width: %d" new-width)))
+
 (use-package! claude-code-ide
   :config
-  (setenv "CLAUDE_CODE_USE_BEDROCK" "1")
-  (setenv "ANTHROPIC_MODEL" "us.anthropic.claude-opus-4-7")
-  (setenv "ANTHROPIC_SMALL_FAST_MODEL" "us.anthropic.claude-haiku-4-5-20251001-v1:0")
-  ;; Sonnet 4.6: us.anthropic.claude-sonnet-4-6
-  (setenv "ANTHROPIC_CUSTOM_HEADERS" "anthropic-beta: context-1m-2025-08-07")
-  (setq claude-code-ide-vterm-anti-flicker nil)
+  ;; BEDROCK vars
+  ;; (setenv "CLAUDE_CODE_USE_BEDROCK" "1")
+  ;; (setenv "ANTHROPIC_MODEL" "us.anthropic.claude-opus-4-7")
+  ;; (setenv "ANTHROPIC_SMALL_FAST_MODEL" "us.anthropic.claude-haiku-4-5-20251001-v1:0") ;; Sonnet 4.6: us.anthropic.claude-sonnet-4-6
+  ;; (setenv "ANTHROPIC_CUSTOM_HEADERS" "anthropic-beta: context-1m-2025-08-07")
+  ;; ND vars
+  ;; (setenv "NOTDIAMOND_INGEST_URL" "https://router.code.notdiamond.ai")
   (setq claude-code-ide-cli-path "notdiamond-claude")
+  (setq claude-code-ide-vterm-anti-flicker nil)
+  (setq claude-code-ide-window-width claude-code-ide-width-narrow)
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (map! :map vterm-mode-map
         "S-<return>" #'claude-code-ide-insert-newline)
@@ -568,6 +591,7 @@ This must run BEFORE LSP starts so executable-find works correctly."
       :desc "List sessions" "l" #'claude-code-ide-list-sessions
       :desc "Toggle window" "t" #'claude-code-ide-toggle
       :desc "Toggle recent" "T" #'claude-code-ide-toggle-recent
+      :desc "Toggle width" "w" #'claude-code-ide-toggle-width
       :desc "Send prompt" "p" #'claude-code-ide-send-prompt
       :desc "Send selection (@)" "a" #'claude-code-ide-insert-at-mentioned
       :desc "Send escape" "e" #'claude-code-ide-send-escape
@@ -579,8 +603,8 @@ This must run BEFORE LSP starts so executable-find works correctly."
 
 
 ;; Ranger
-(ranger-override-dired-mode t)
-(map! :leader :prefix "o" :desc "ranger" "D" 'ranger)
+;; (ranger-override-dired-mode t)
+(map! :leader :prefix "o" :desc "ranger" "D" #'ranger)
 
 
 ;; Org
