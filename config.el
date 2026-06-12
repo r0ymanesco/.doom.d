@@ -925,6 +925,35 @@ Updates the variable and resizes the live window if visible."
        (ssh-deploy-add-menu)) ;; If you want menu-bar feature
 
 
+;; Show all persp workspaces in the tab bar (frame-level, appears once)
+(defun my/tab-bar-workspaces ()
+  "Tab bar items showing persp-mode workspaces with numbers."
+  (when (and (bound-and-true-p persp-mode)
+             (fboundp 'persp-names)
+             (fboundp 'get-current-persp)
+             (fboundp 'safe-persp-name))
+    (let* ((current (safe-persp-name (get-current-persp)))
+           (names (cl-remove persp-nil-name (persp-names) :test #'string=)))
+      (cl-loop for name in names
+               for i from 1
+               collect
+               (let* ((active (string= name current))
+                      (label (propertize
+                              (format " %d:%s " i name)
+                              'face (if active
+                                        '(:inherit doom-modeline-persp-name
+                                          :weight bold
+                                          :box (:line-width (1 . -1)))
+                                      'tab-bar-tab-inactive))))
+                 `(,(intern (concat "ws-" name))
+                   menu-item ,label
+                   (lambda () (interactive) (persp-switch ,name))))))))
+
+(setq tab-bar-format '(my/tab-bar-workspaces)
+      tab-bar-show t)
+(tab-bar-mode 1)
+
+
 ;; (define-key evil-motion-state-map (kbd "C-e") nil)
 ;; (define-key smartparens-mode-map (kbd "C-e") #'sp-up-sexp)
 
