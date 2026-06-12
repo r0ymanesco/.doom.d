@@ -925,33 +925,54 @@ Updates the variable and resizes the live window if visible."
        (ssh-deploy-add-menu)) ;; If you want menu-bar feature
 
 
-;; Show all persp workspaces in the tab bar (frame-level, appears once)
+;; Show all persp workspaces in the tab bar (frame-level, appears once).
+;; Uses a single propertized string (recomputed every redisplay, so the active
+;; highlight follows reliably) rather than menu-items (which Emacs caches by key).
+;; Active workspace uses a background highlight so its width never changes.
 (defun my/tab-bar-workspaces ()
-  "Tab bar items showing persp-mode workspaces with numbers."
+  "Tab bar string showing all persp-mode workspaces, highlighting the active one."
   (when (and (bound-and-true-p persp-mode)
              (fboundp 'persp-names)
              (fboundp 'get-current-persp)
              (fboundp 'safe-persp-name))
     (let* ((current (safe-persp-name (get-current-persp)))
            (names (cl-remove persp-nil-name (persp-names) :test #'string=)))
-      (cl-loop for name in names
-               for i from 1
-               collect
-               (let* ((active (string= name current))
-                      (label (propertize
-                              (format " %d:%s " i name)
-                              'face (if active
-                                        '(:inherit doom-modeline-persp-name
-                                          :weight bold
-                                          :box (:line-width (1 . -1)))
-                                      'tab-bar-tab-inactive))))
-                 `(,(intern (concat "ws-" name))
-                   menu-item ,label
-                   (lambda () (interactive) (persp-switch ,name))))))))
+      (mapconcat
+       (lambda (pair)
+         (let* ((i (car pair))
+                (name (cdr pair))
+                (active (string= name current))
+                (n name)
+                ;; The active marker MUST differ in characters (not just face):
+                ;; the tab-bar redisplay compares content with `equal', which
+                ;; ignores text properties, so a face-only change is never drawn.
+                (text (if active
+                          (format "▎%d:%s ▎" i name)
+                        (format " %d:%s " i name))))
+           (propertize
+            text
+            'face (if active 'tab-bar-tab 'tab-bar-tab-inactive)
+            'mouse-face 'tab-bar-tab-highlight
+            'help-echo (format "Switch to workspace %s" n)
+            'keymap (let ((m (make-sparse-keymap)))
+                      (define-key m [tab-bar mouse-1]
+                        (lambda (_e) (interactive "e") (persp-switch n)))
+                      m))))
+       (cl-loop for n in names for i from 1 collect (cons i n))
+       (propertize " " 'face 'tab-bar)))))
 
 (setq tab-bar-format '(my/tab-bar-workspaces)
-      tab-bar-show t)
+      tab-bar-show t
+      ;; Don't auto-resize: our labels are already sized by name length.
+      tab-bar-auto-width nil)
 (tab-bar-mode 1)
+
+;; Force the tab bar to redraw when switching workspaces. Doom already adds
+;; `+workspaces-load-tab-bar-data-h' to `persp-activated-functions'; we append
+;; a redisplay nudge after it. (This var isn't a standard hook, so use add-to-list.)
+(defun my/tab-bar-refresh (&rest _)
+  (force-mode-line-update t))
+(add-to-list 'persp-activated-functions #'my/tab-bar-refresh 'append)
 
 
 ;; (define-key evil-motion-state-map (kbd "C-e") nil)
