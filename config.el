@@ -307,9 +307,9 @@ Delegates to remote-sync for remote projects."
              remote-sync-remove-project
              remote-sync-cleanup
              remote-sync-run
-             remote-sync-vterm
-             remote-sync-vterm-select
-             remote-sync-vterm-project
+             remote-sync-ghostel
+             remote-sync-ghostel-select
+             remote-sync-ghostel-project
              remote-sync-edit-ssh-config
              remote-sync-stop-daemon
              remote-sync-daemon-status
@@ -336,9 +336,9 @@ Delegates to remote-sync for remote projects."
          :desc "Remove project"          "d" #'remote-sync-remove-project
          :desc "Cleanup expired"         "x" #'remote-sync-cleanup
          :desc "Run command"             "r" #'remote-sync-run
-         :desc "Terminal (smart)"        "t" #'remote-sync-vterm
-         :desc "Terminal (select host)"  "T" #'remote-sync-vterm-select
-         :desc "Terminal (project)"      "p" #'remote-sync-vterm-project
+         :desc "Terminal (smart)"        "t" #'remote-sync-ghostel
+         :desc "Terminal (select host)"  "T" #'remote-sync-ghostel-select
+         :desc "Terminal (project)"      "p" #'remote-sync-ghostel-project
          :desc "Edit SSH config"         "e" #'remote-sync-edit-ssh-config
          :desc "Stop daemon"             "q" #'remote-sync-stop-daemon
          :desc "Daemon status"           "?" #'remote-sync-daemon-status
@@ -526,21 +526,6 @@ This must run BEFORE LSP starts so executable-find works correctly."
 
 (add-hook 'lsp-mode-hook #'my/lsp-remote-optimizations)
 
-;; VTerm performance optimizations
-(after! vterm
-  ;; Limit scrollback to reduce memory usage and improve performance
-  (setq vterm-max-scrollback 5000)
-  ;; Faster input responsiveness (default is 0.1)
-  (setq vterm-timer-delay 0.05))
-
-;; Disable line numbers in vterm - this is a major source of lag
-(add-hook 'vterm-mode-hook
-          (lambda ()
-            (setq-local display-line-numbers nil)
-            (setq-local truncate-lines t)
-            ;; Limit scrollback for claude-code buffers to reduce reflow jumping
-            (when (string-match-p "\\*claude-code\\[" (buffer-name))
-              (setq-local vterm-max-scrollback 1000))))
 
 ;; Claude code
 (defvar claude-code-ide-width-narrow 100)
@@ -571,13 +556,12 @@ Updates the variable and resizes the live window if visible."
   ;; (setenv "ANTHROPIC_SMALL_FAST_MODEL" "us.anthropic.claude-haiku-4-5-20251001-v1:0") ;; Sonnet 4.6: us.anthropic.claude-sonnet-4-6
   ;; (setenv "ANTHROPIC_CUSTOM_HEADERS" "anthropic-beta: context-1m-2025-08-07")
   ;; ND vars
-  ;; (setenv "NOTDIAMOND_INGEST_URL" "https://router.code.notdiamond.ai")
   (setq claude-code-ide-cli-path "notdiamond-claude")
-  (setq claude-code-ide-vterm-anti-flicker nil)
+  (setq claude-code-ide-terminal-backend 'ghostel)
+  (with-eval-after-load 'ghostel
+    (setq ghostel-module-auto-install 'download))
   (setq claude-code-ide-window-width claude-code-ide-width-narrow)
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
-  (map! :map vterm-mode-map
-        "S-<return>" #'claude-code-ide-insert-newline)
   (advice-add 'claude-code-ide-insert-at-mentioned :after
               (lambda (&rest _) (claude-code-ide-switch-to-buffer))))
 (map! :leader
@@ -994,3 +978,4 @@ Updates the variable and resizes the live window if visible."
 ;;
 ;; You can also try 'gd' (or 'C-c c d') to jump to their definition and see how
 ;; they are implemented.
+

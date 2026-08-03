@@ -440,52 +440,59 @@ Only writes each file if it doesn't already exist."
     (message "Project '%s' ready! Magit uses remote git automatically." project-name)))
 
 ;;; ============================================================
-;;; VTerm Integration
+;;; Ghostel Integration (Terminal)
 ;;; ============================================================
 
-(defun remote-sync--vterm-remote (host &optional directory)
-  "Open vterm connected to HOST in DIRECTORY."
-  (unless (require 'vterm nil t)
-    (user-error "vterm is not installed. Add (vterm) to packages.el"))
+(defun remote-sync--ghostel-remote (host &optional directory)
+  "Open ghostel connected to HOST in DIRECTORY."
+  (unless (require 'ghostel nil t)
+    (user-error "ghostel is not installed. Add (ghostel) to init.el modules"))
   (let* ((dir (or directory "~"))
          (dir-name (if (string= dir "~")
                        "~"
                      (file-name-nondirectory (directory-file-name dir))))
-         (buffer-name (format "*vterm:%s:%s*" host dir-name))
+         (buffer-name (format "*ghostel:%s:%s*" host dir-name))
          (buffer (get-buffer buffer-name)))
     (if (and buffer (buffer-live-p buffer))
         (switch-to-buffer buffer)
-      ;; Start vterm with SSH as the shell command directly
-      (let ((vterm-shell (format "ssh -t %s 'cd %s && exec $SHELL -l'" host dir)))
-        (vterm buffer-name)))))
+      ;; Start ghostel with SSH as the remote shell
+      (with-current-buffer (get-buffer-create buffer-name)
+        (ghostel-exec (current-buffer)
+                      "ssh"
+                      (list "-t" host (format "cd %s && exec $SHELL -l" dir)))))))
 
 ;;;###autoload
-(defun remote-sync-vterm ()
-  "Open vterm on remote machine.
+(defun remote-sync-ghostel ()
+  "Open ghostel terminal on remote machine.
 If in a synced project, opens terminal on that host in project dir.
 Otherwise, prompts to select a host."
   (interactive)
   (if-let* ((root (ignore-errors (projectile-project-root)))
             (info (remote-sync--project-info root)))
-      (remote-sync--vterm-remote (car info) (cdr info))
+      (remote-sync--ghostel-remote (car info) (cdr info))
     (when-let ((host (remote-sync--select-host "Terminal on: ")))
-      (remote-sync--vterm-remote host))))
+      (remote-sync--ghostel-remote host))))
 
 ;;;###autoload
-(defun remote-sync-vterm-select ()
-  "Open vterm on a selected host (always prompts for host selection)."
+(defun remote-sync-ghostel-select ()
+  "Open ghostel terminal on a selected host (always prompts for host selection)."
   (interactive)
   (when-let ((host (remote-sync--select-host "Terminal on: ")))
-    (remote-sync--vterm-remote host)))
+    (remote-sync--ghostel-remote host)))
 
 ;;;###autoload
-(defun remote-sync-vterm-project ()
-  "Open vterm in current synced project's remote directory."
+(defun remote-sync-ghostel-project ()
+  "Open ghostel terminal in current synced project's remote directory."
   (interactive)
   (if-let* ((root (projectile-project-root))
             (info (remote-sync--project-info root)))
-      (remote-sync--vterm-remote (car info) (cdr info))
+      (remote-sync--ghostel-remote (car info) (cdr info))
     (user-error "Not in a synced remote project")))
+
+;; Backward compatibility aliases
+(defalias 'remote-sync-vterm #'remote-sync-ghostel)
+(defalias 'remote-sync-vterm-select #'remote-sync-ghostel-select)
+(defalias 'remote-sync-vterm-project #'remote-sync-ghostel-project)
 
 ;;; ============================================================
 ;;; Magit Integration
