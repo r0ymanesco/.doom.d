@@ -266,6 +266,33 @@ Delegates to remote-sync for remote projects."
 (require 'magit-todos)
 (magit-todos-mode)
 
+;; Ivy doesn't do anything special for `completing-read-multiple' (used by
+;; e.g. Magit's multi-branch merge prompt), so it falls back to a plain
+;; minibuffer textbox instead of a candidate list. Replace it with a loop
+;; of `ivy-read' calls: pick one candidate at a time, submit an empty
+;; input to finish.
+(defun +ivy-completing-read-multiple
+    (prompt collection &optional predicate require-match
+     initial-input history def _inherit-input-method)
+  (let (chosen sel (first t))
+    (while (not (string= "" (setq sel
+                                  (ivy-read (if chosen
+                                                (format "%s[%s] " prompt
+                                                       (mapconcat #'identity (reverse chosen) ","))
+                                              prompt)
+                                            collection
+                                            :predicate predicate
+                                            :require-match require-match
+                                            :initial-input (and first initial-input)
+                                            :history history
+                                            :def def
+                                            :caller '+ivy-completing-read-multiple))))
+      (push sel chosen)
+      (setq first nil))
+    (nreverse chosen)))
+
+(advice-add 'completing-read-multiple :override #'+ivy-completing-read-multiple)
+
 
 ;; Aidermacs
 (use-package aidermacs
@@ -559,7 +586,19 @@ Updates the variable and resizes the live window if visible."
   (setq claude-code-ide-cli-path "notdiamond-claude")
   (setq claude-code-ide-terminal-backend 'ghostel)
   (with-eval-after-load 'ghostel
-    (setq ghostel-module-auto-install 'download))
+    (setq ghostel-module-auto-install 'download)
+    ;; Prevent ghostel from force-anchoring the window on keypress while in
+    ;; evil normal/visual state. ghostel-scroll-on-input calls anchor-window
+    ;; with force=t before keys reach evil, snapping the viewport to the
+    ;; bottom before k/j can move point. We advice ghostel--on-user-input to
+    ;; skip the anchor snap when evil is in a navigation state.
+    (advice-add 'ghostel--on-user-input :around
+                (defun +ghostel--skip-anchor-in-normal-state (orig-fn &rest args)
+                  (if (and evil-ghostel-mode
+                           (memq evil-state '(normal visual operator motion)))
+                      (let ((ghostel-scroll-on-input nil))
+                        (apply orig-fn args))
+                    (apply orig-fn args)))))
   (setq claude-code-ide-window-width claude-code-ide-width-narrow)
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (advice-add 'claude-code-ide-insert-at-mentioned :after
@@ -978,4 +1017,3 @@ Updates the variable and resizes the live window if visible."
 ;;
 ;; You can also try 'gd' (or 'C-c c d') to jump to their definition and see how
 ;; they are implemented.
-
