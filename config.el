@@ -268,27 +268,42 @@ Delegates to remote-sync for remote projects."
 
 ;; Ivy doesn't do anything special for `completing-read-multiple' (used by
 ;; e.g. Magit's multi-branch merge prompt), so it falls back to a plain
-;; minibuffer textbox instead of a candidate list. Replace it with a loop
-;; of `ivy-read' calls: pick one candidate at a time, submit an empty
-;; input to finish.
+;; minibuffer textbox instead of a candidate list. Replace it with
+;; `ivy-read': plain RET picks the candidate and finishes immediately
+;; (matching the old single-branch behavior); `M-RET' picks it and
+;; prompts again to add another, for the rare multi-branch merge.
+(defvar +ivy-crm--continue nil)
+
+(defun +ivy-crm-continue ()
+  "Select the current candidate and prompt for another (multi-select)."
+  (interactive)
+  (setq +ivy-crm--continue t)
+  (ivy-done))
+
 (defun +ivy-completing-read-multiple
     (prompt collection &optional predicate require-match
      initial-input history def _inherit-input-method)
-  (let (chosen sel (first t))
-    (while (not (string= "" (setq sel
-                                  (ivy-read (if chosen
-                                                (format "%s[%s] " prompt
-                                                       (mapconcat #'identity (reverse chosen) ","))
-                                              prompt)
-                                            collection
-                                            :predicate predicate
-                                            :require-match require-match
-                                            :initial-input (and first initial-input)
-                                            :history history
-                                            :def def
-                                            :caller '+ivy-completing-read-multiple))))
-      (push sel chosen)
-      (setq first nil))
+  (let ((keymap (make-sparse-keymap))
+        (+ivy-crm--continue t)
+        chosen sel (first t))
+    (define-key keymap (kbd "M-RET") #'+ivy-crm-continue)
+    (while +ivy-crm--continue
+      (setq +ivy-crm--continue nil)
+      (setq sel (ivy-read (if chosen
+                               (format "%s[%s] " prompt
+                                      (mapconcat #'identity (reverse chosen) ","))
+                             prompt)
+                          collection
+                          :predicate predicate
+                          :require-match require-match
+                          :initial-input (and first initial-input)
+                          :history history
+                          :def def
+                          :keymap keymap
+                          :caller '+ivy-completing-read-multiple))
+      (setq first nil)
+      (unless (string= sel "")
+        (push sel chosen)))
     (nreverse chosen)))
 
 (advice-add 'completing-read-multiple :override #'+ivy-completing-read-multiple)
