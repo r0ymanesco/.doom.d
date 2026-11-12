@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Stand-in for the claude binary. notdiamond is pointed at it through a
+# temporary config; it records the arguments notdiamond would pass to Claude.
+# GODEL_PROBE_OUT: file to write the result to (JSON).
+# GODEL_PROBE_REAL: real claude binary, used to answer --version.
+for a in "$@"; do
+  case "$a" in
+    --version|-v|-V) exec "${GODEL_PROBE_REAL:-$HOME/.local/bin/claude}" --version ;;
+  esac
+done
+python3 -I - "$GODEL_PROBE_OUT" "$@" <<'PY'
+import json, os, sys
+out, args = sys.argv[1], sys.argv[2:]
+settings = []
+for i, a in enumerate(args):
+    v = None
+    if a == "--settings" and i + 1 < len(args):
+        v = args[i + 1]
+    elif a.startswith("--settings="):
+        v = a.split("=", 1)[1]
+    if v is None:
+        continue
+    if os.path.isfile(v):
+        with open(v) as f:
+            settings.append({"source": "file", "path": v, "value": json.load(f)})
+    else:
+        settings.append({"source": "inline", "value": json.loads(v)})
+with open(out, "w") as f:
+    json.dump({"argv": args, "settings": settings,
+               "env": {k: v for k, v in os.environ.items()
+                       if k.startswith(("ANTHROPIC_", "CLAUDE_", "NOTDIAMOND_"))}},
+              f, indent=2)
+PY
