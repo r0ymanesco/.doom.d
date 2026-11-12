@@ -639,6 +639,17 @@ Updates the variable and resizes the live window if visible."
       :desc "Setup Emacs tools" "E" #'claude-code-ide-emacs-tools-setup
 ) 
 
+;; godel: agent development environment (lisp/godel, see lisp/godel/PLAN.md)
+(add-to-list 'load-path (expand-file-name "lisp/godel" doom-user-dir))
+(use-package! godel
+  :commands (godel-board godel-new-task godel-refresh-model-options)
+  :config (godel-mode 1))
+(map! :leader
+      :prefix ("G" . "godel")
+      :desc "Board" "a" #'godel-board
+      :desc "New task" "n" #'godel-new-task
+      :desc "Refresh model list" "M" #'godel-refresh-model-options)
+
 ;; Markdown
 (after! markdown-mode
   (add-hook 'markdown-mode-hook
@@ -981,12 +992,14 @@ Updates the variable and resizes the live window if visible."
                 (name (cdr pair))
                 (active (string= name current))
                 (n name)
+                ;; godel task workspaces get a state badge (● needs you, ✓ review).
+                (badge (if (fboundp 'godel-workspace-badge) (godel-workspace-badge name) ""))
                 ;; The active marker MUST differ in characters (not just face):
                 ;; the tab-bar redisplay compares content with `equal', which
                 ;; ignores text properties, so a face-only change is never drawn.
                 (text (if active
-                          (format "▎%d:%s ▎" i name)
-                        (format " %d:%s " i name))))
+                          (format "▎%d:%s%s ▎" i name badge)
+                        (format " %d:%s%s " i name badge))))
            (propertize
             text
             'face (if active 'tab-bar-tab 'tab-bar-tab-inactive)

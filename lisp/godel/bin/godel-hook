@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Claude Code hook -> godel.  Usage (in hook settings): godel-hook EVENT
+# Reads the hook JSON on stdin and hands it to Emacs, base64-encoded so no
+# quoting is needed.  GODEL_SERVER is the Emacs server socket, set by godel
+# when it launches the session.  Always exits 0 so a missing Emacs never
+# disturbs Claude.
+event=$1
+[ -n "$GODEL_SERVER" ] || exit 0
+payload=$(base64 -w0)
+emacsclient -s "$GODEL_SERVER" -n \
+  --eval "(godel-status-event \"$event\" \"$payload\")" >/dev/null 2>&1
+exit 0

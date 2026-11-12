@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Stand-in for the Claude binary, used by godel's pin check.  godel points
+# the notdiamond wrapper at it through a temporary config copy; it records
+# the arguments the wrapper would pass to Claude (NUL-separated) in
+# $GODEL_PROBE_OUT and exits.  --version is answered by the real binary
+# ($GODEL_PROBE_REAL) so the wrapper's version check passes.
+for a in "$@"; do
+  case "$a" in
+    --version|-v|-V) exec "${GODEL_PROBE_REAL:-$HOME/.local/bin/claude}" --version ;;
+  esac
+done
+[ -n "$GODEL_PROBE_OUT" ] && printf '%s\0' "$@" > "$GODEL_PROBE_OUT"
+exit 0
