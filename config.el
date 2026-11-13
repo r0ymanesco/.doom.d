@@ -614,7 +614,7 @@ Updates the variable and resizes the live window if visible."
                       (let ((ghostel-scroll-on-input nil))
                         (apply orig-fn args))
                     (apply orig-fn args)))))
-  (setq claude-code-ide-window-width claude-code-ide-width-narrow)
+  (setq claude-code-ide-window-width claude-code-ide-width-wide)
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (advice-add 'claude-code-ide-insert-at-mentioned :after
               (lambda (&rest _) (claude-code-ide-switch-to-buffer))))
