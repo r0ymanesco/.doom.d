@@ -1004,6 +1004,32 @@ instance-name prompt bug): it waits for the first and gets its buffer."
               (should (= (length (plist-get (godel-task-get id) :comments)) 1)))
           (kill-buffer (godel-review--list-buffer-name id)))))))
 
+(ert-deftest godel-test-ask-author ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (sent nil) (quote-shown nil))
+      (should (equal (godel-review-question-text task "Why?") "Why?"))
+      (should (equal (godel-review-question-text task "Why 20?" '("app.py" 5 5))
+                     "About `app.py` line 5:\n```\n    return 20\n```\nWhy 20?"))
+      (cl-letf (((symbol-function 'godel-compose)
+                 (lambda (_repo kind _header callback &optional _initial quote)
+                   (should (eq kind 'question))
+                   (setq quote-shown quote)
+                   (funcall callback "Why 20?")))
+                ((symbol-function 'godel-agent-ensure-session)
+                 (lambda (_task cb) (funcall cb (current-buffer))))
+                ((symbol-function 'godel-tui-wait)
+                 (lambda (_b _p _t cb) (funcall cb "screen")))
+                ((symbol-function 'godel-agent-send)
+                 (lambda (_task text) (setq sent text))))
+        (godel-review-ask (godel-task-get id) '("app.py" 4 5)))
+      (should (equal quote-shown "> def b():\n>     return 20"))
+      (should (string-prefix-p "About `app.py` lines 4-5:" sent))
+      (should (string-suffix-p "Why 20?" sent))
+      ;; Asking doesn't touch the comments.
+      (should-not (plist-get (godel-task-get id) :comments)))))
+
 (ert-deftest godel-test-review-history ()
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp)))

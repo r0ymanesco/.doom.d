@@ -621,6 +621,41 @@ ON-SENT, if non-nil, is called once the text has been sent."
 
 (add-hook 'godel-event-functions #'godel-review--refresh-lists)
 
+;;;; Asking the author
+
+(defun godel-review-question-text (task question &optional target)
+  "QUESTION for TASK's author, with the code at TARGET (FILE START END) quoted."
+  (if (not target)
+      question
+    (pcase-let ((`(,file ,start ,end) target))
+      (format "About `%s` %s:\n```\n%s\n```\n%s"
+              file (if (= start end) (format "line %d" start) (format "lines %d-%d" start end))
+              (or (godel-review--file-lines task file start end) "")
+              question))))
+
+(defun godel-review-ask (task &optional target)
+  "Ask TASK's author a question; TARGET (FILE START END) attaches that code."
+  (let ((id (plist-get task :id)))
+    (godel-compose
+     (plist-get task :repo) 'question
+     (if target
+         (format "Question for %s about %s:%s" id (car target)
+                 (if (= (nth 1 target) (nth 2 target)) (nth 1 target)
+                   (format "%d-%d" (nth 1 target) (nth 2 target))))
+       (format "Question for %s" id))
+     (lambda (question)
+       (godel-review--send-to-author
+        (godel-task-get id) (godel-review-question-text (godel-task-get id) question target)
+        (lambda () (message "godel: question sent to %s" id))))
+     nil
+     (and target
+          (mapconcat (lambda (l) (concat "> " l))
+                     (split-string (or (godel-review--file-lines task (car target)
+                                                                 (nth 1 target) (nth 2 target))
+                                       "")
+                                   "\n")
+                     "\n")))))
+
 ;;;; History
 
 (defun godel-review-history (task)
@@ -642,6 +677,8 @@ ON-SENT, if non-nil, is called once the text has been sent."
 ;;;; Menu
 
 (defvar godel-review--menu-task nil "Task ID the open review menu acts on.")
+(defvar godel-review--menu-target nil
+  "(FILE START END) of the region when the review menu was opened, if any.")
 
 (defun godel-review--menu-target ()
   (or (godel-task-get godel-review--menu-task) (user-error "godel: no task")))
@@ -654,7 +691,14 @@ ON-SENT, if non-nil, is called once the text has been sent."
     ("l" "list comments" (lambda () (interactive) (godel-review-list (godel-review--menu-target))))
     ("h" "feedback history" (lambda () (interactive) (godel-review-history (godel-review--menu-target))))]
    ["Talk to the author"
-    ("s" "send pending comments" (lambda () (interactive) (godel-review-send (godel-review--menu-target))))]])
+    ("s" "send pending comments" (lambda () (interactive) (godel-review-send (godel-review--menu-target))))
+    ("a" (lambda () (interactive) (godel-review-ask (godel-review--menu-target) godel-review--menu-target))
+     :description godel-review--ask-description)]])
+
+(defun godel-review--ask-description ()
+  (if godel-review--menu-target
+      (format "ask about %s:%s" (car godel-review--menu-target) (nth 1 godel-review--menu-target))
+    "ask a question"))
 
 ;;;###autoload
 (defun godel-review-menu (&optional task)
@@ -663,7 +707,11 @@ ON-SENT, if non-nil, is called once the text has been sent."
   (let ((task (or task (godel-review--buffer-task)
                   (and (derived-mode-p 'godel-review-mode) (godel-task-get godel-review--list-task))
                   (user-error "godel: not in a task (use v on the board)"))))
-    (setq godel-review--menu-task (plist-get task :id))
+    (setq godel-review--menu-task (plist-get task :id)
+          ;; A region in this task's diff or file: questions can be about it.
+          godel-review--menu-target (and (use-region-p)
+                                         (eq (godel-review--buffer-task) task)
+                                         (ignore-errors (godel-review--target))))
     (transient-setup 'godel-review-menu-prefix)))
 
 (provide 'godel-review)
