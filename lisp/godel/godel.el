@@ -32,7 +32,6 @@
 (require 'godel-reviewer)
 (require 'godel-ship)
 
-(declare-function notifications-notify "notifications" (&rest params))
 (defvar claude-code-ide-buffer-name-function)
 (defvar persp-activated-functions)
 (defvar server-name)
@@ -65,10 +64,7 @@
                                ('model-mismatch "started on the wrong model")
                                (_ (symbol-name state)))))
               (body (or (plist-get task :last-event) "")))
-          (if (and (require 'notifications nil t)
-                   (ignore-errors (notifications-notify :title title :body body :app-name "godel")))
-              nil
-            (message "%s: %s" title body)))))
+          (godel-notify title body))))
     (force-mode-line-update t)))
 
 (defun godel--attention-count ()

@@ -250,19 +250,46 @@ board) removes plain `face' properties when it fontifies."
                                    '(pending sent addressed outdated))
                  ", "))))
 
+(defun godel-board--review-badge (task)
+  "(ICON TEXT FACE) for TASK's independent review, or nil if nothing to show.
+Running: the elapsed time and what the reviewer is doing.  Findings
+waiting to be accepted or dropped: their count.  A finished review with no
+findings, or a failed one: until the review list has been opened."
+  (let ((status (plist-get task :review-status))
+        (proposed (cl-count 'proposed (plist-get task :findings)
+                            :key (lambda (f) (plist-get f :state)))))
+    (cond
+     ((eq status 'running)
+      (list "⟳" (concat "reviewing "
+                        (godel-board--age (plist-get task :review-started))
+                        (if-let* ((a (plist-get task :review-activity))) (concat " · " a) ""))
+            (godel-board--state-face 'setting-up)))
+     ((> proposed 0)
+      (list "◎" (format "%d finding%s" proposed (if (= proposed 1) "" "s"))
+            (godel-board--state-face 'working)))
+     ((plist-get task :review-seen) nil)
+     ((eq status 'done) (list "◎" "no findings" (godel-board--state-face 'needs-review)))
+     ((eq status 'failed) (list "✗" "review failed" (godel-board--state-face 'needs-attention))))))
+
 (defun godel-board--insert-task (task)
   "Insert TASK as a full-board row."
   (let ((id (plist-get task :id))
         (face (godel-board--state-face (plist-get task :state))))
     (magit-insert-section (godel-task id (not (member id godel-board--expanded)))
       (magit-insert-heading
-        (format "      %s %-32s %-14s %-50s %s"
+        (format "      %s %-32s %-14s %-50s %s%s"
                 (godel-board--icon task)
                 (godel-board--paint (truncate-string-to-width (plist-get task :title) 32 nil nil "…")
                             'magit-section-secondary-heading)
                 (truncate-string-to-width (godel-board--model-label task) 14 nil nil "…")
                 (godel-board--paint (truncate-string-to-width (or (plist-get task :last-event) "") 50 nil nil "…")
                             face)
+                (if-let* ((badge (godel-board--review-badge task)))
+                    (concat (godel-board--paint
+                             (truncate-string-to-width (concat (car badge) " " (cadr badge)) 40 nil ?\s "…")
+                             (nth 2 badge))
+                            " ")
+                  "")
                 (godel-board--paint (godel-board--age (or (plist-get task :updated) (plist-get task :created)))
                             'godel-board-dim)))
       (godel-board--details task 8))))
@@ -272,9 +299,11 @@ board) removes plain `face' properties when it fontifies."
   (let* ((id (plist-get task :id))
          (state (plist-get task :state))
          (age (godel-board--age (or (plist-get task :updated) (plist-get task :created))))
+         (badge (godel-board--review-badge task))
          ;; Marker, icon and spaces take 4 columns, the age plus a space
-         ;; more, and magit adds "…" after a collapsed row; keep a margin.
-         (title-width (max 8 (- godel-sidebar-width 4 (length age) 1 3)))
+         ;; more, a review badge 2, and magit adds "…" after a collapsed row;
+         ;; keep a margin.
+         (title-width (max 8 (- godel-sidebar-width 4 (length age) 1 3 (if badge 2 0))))
          (attention (memq state '(needs-attention model-mismatch))))
     (magit-insert-section (godel-task id (not (member id godel-board--expanded)))
       (magit-insert-heading
@@ -283,6 +312,7 @@ board) removes plain `face' properties when it fontifies."
                 (godel-board--paint (truncate-string-to-width (plist-get task :title) title-width nil ?\s "…")
                             (if (equal id current) 'magit-section-highlight
                                     'magit-section-secondary-heading))
+                (if badge (concat " " (godel-board--paint (car badge) (nth 2 badge))) "")
                 " " (godel-board--paint age 'godel-board-dim)
                 (when attention
                   (concat "\n    "

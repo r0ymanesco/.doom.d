@@ -694,8 +694,23 @@ so the task's state doesn't change. Default model: Not Diamond
   and its full diff (cut at `godel-reviewer-max-diff` characters) and
   returns findings as JSON between `<findings>` tags: file, lines, severity,
   comment. They're stored as proposed findings and appear in the review
-  list. While it runs, the board shows "reviewing on <model>", then "N
-  findings" (or the error). It saves no transcript.
+  list. It saves no transcript.
+- **Progress:** the run's output is streamed (`--output-format stream-json
+  --verbose`); each tool call becomes the task's `:review-activity`. The
+  board row shows a badge, redrawn every second while any review runs:
+
+  ```
+  ⟳ reviewing 18s · Grep(model_params)     (blue, while running)
+  ◎ 2 findings                             (yellow, until each is accepted or dropped)
+  ◎ no findings / ✗ review failed          (until the review list is opened)
+  ```
+
+  The sidebar shows just the icon after the title. A desktop notification
+  says when it's done ("godel: review of <title> is done: N findings") or
+  failed. Review progress doesn't count as a task update, so the row's age
+  column isn't reset (`godel-task--quiet-props`). Tested with a real review:
+  the badge ticked each second, showed `Glob(**/*.py)` while the reviewer
+  searched, and ended at "◎ 4 findings" with the notification.
 - **Walkthrough (`v w`)**: an interactive claude-code-ide session in the
   task's worktree, an instance named `review` (godel answers
   claude-code-ide's instance-name prompt itself), in `--permission-mode

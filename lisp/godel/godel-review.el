@@ -690,6 +690,10 @@ C edit, x delete, s send)."
       (setq godel-review--list-task (plist-get task :id)
             default-directory (plist-get task :worktree))
       (godel-review-list-refresh))
+    ;; Opening the list counts as having seen a finished review's result.
+    (when (and (memq (plist-get task :review-status) '(done failed))
+               (not (plist-get task :review-seen)))
+      (godel-task-update (plist-get task :id) :review-seen t))
     (pop-to-buffer buffer)))
 
 (defun godel-review--list-comment ()

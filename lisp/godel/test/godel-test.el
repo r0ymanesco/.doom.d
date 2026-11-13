@@ -1065,7 +1065,12 @@ instance-name prompt bug): it waits for the first and gets its buffer."
                  "{\"type\":\"result\",\"is_error\":false,\"result\":\"Fine.<findings>[]</findings>\"}")))
   (should-error (godel-reviewer-parse "{\"type\":\"result\",\"is_error\":true,\"result\":\"overloaded\"}"))
   (should-error (godel-reviewer-parse "{\"type\":\"result\",\"is_error\":false,\"result\":\"no block\"}"))
-  (should-error (godel-reviewer-parse "nothing here")))
+  (should-error (godel-reviewer-parse "nothing here"))
+  ;; Streamed output: the result line comes after other JSON lines.
+  (should (= 0 (length (godel-reviewer-parse
+                        (concat "{\"type\":\"system\",\"subtype\":\"init\"}\n"
+                                "{\"type\":\"assistant\",\"message\":{\"content\":[]}}\n"
+                                "{\"type\":\"result\",\"is_error\":false,\"result\":\"<findings>[]</findings>\"}\n"))))))
 
 (ert-deftest godel-test-reviewer-prompt-has-task-and-diff ()
   (godel-test-with-env
@@ -1083,15 +1088,29 @@ instance-name prompt bug): it waits for the first and gets its buffer."
     (let* ((task (godel-test-review-task tmp))
            (id (plist-get task :id))
            (process-environment (cons "GODEL_SERVER=/should/not/leak" process-environment))
-           ran)
+           ran activity-seen badge-seen notified)
       (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
-                ((symbol-function 'godel-models--run)
-                 (lambda (program args callback &optional input env)
+                ((symbol-function 'godel-notify) (lambda (title body) (push (list title body) notified)))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (program args input env on-message on-exit)
                    (setq ran (list :program program :args args :input input :env env))
-                   (funcall callback 0 godel-test-reviewer-output))))
+                   ;; A tool call while it works: shown as the review activity.
+                   (funcall on-message
+                            '((type . "assistant")
+                              (message . ((content . (((type . "tool_use") (name . "Read")
+                                                       (input . ((file_path . "/w/app.py"))))))))))
+                   (setq activity-seen (plist-get (godel-task-get id) :review-activity))
+                   (setq badge-seen (godel-board--review-badge (godel-task-get id)))
+                   (funcall on-exit 0 godel-test-reviewer-output))))
         (godel-reviewer-run (godel-task-get id)))
-      ;; Read-only, headless, no session saved, no pins for Not Diamond, no godel hooks.
+      ;; Streamed, read-only, headless, no session saved, no pins for Not
+      ;; Diamond, no godel hooks.
+      (should (member "stream-json" (plist-get ran :args)))
       (should (member "--no-session-persistence" (plist-get ran :args)))
+      (should (equal activity-seen "Read(app.py)"))
+      (should (equal (car badge-seen) "⟳"))
+      (should (string-match-p "\\`reviewing [0-9]+s · Read(app.py)\\'" (cadr badge-seen)))
+      (should (equal notified '(("godel: review of rev is done" "2 findings (v l on the board to see them)"))))
       (should (member "Edit,Write,MultiEdit,NotebookEdit,Bash" (plist-get ran :args)))
       (should-not (member "--settings" (plist-get ran :args)))
       (should-not (member "--effort" (plist-get ran :args)))
@@ -1116,12 +1135,15 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (should (equal (plist-get (car (plist-get task :comments)) :text)
                        "[reviewer, high] 20 contradicts the spec; return 2."))
         (should (eq (plist-get (car (plist-get task :comments)) :state) 'pending)))
-      ;; A failed run is recorded, not raised.
+      ;; A failed run is recorded and notified, not raised.
+      (setq notified nil)
       (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
-                ((symbol-function 'godel-models--run)
-                 (lambda (_p _a callback &rest _) (funcall callback 1 "boom"))))
+                ((symbol-function 'godel-notify) (lambda (title body) (push (list title body) notified)))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a _i _e _m on-exit) (funcall on-exit 1 "boom"))))
         (godel-reviewer-run (godel-task-get id)))
-      (should (eq (plist-get (godel-task-get id) :review-status) 'failed)))))
+      (should (eq (plist-get (godel-task-get id) :review-status) 'failed))
+      (should (equal (caar notified) "godel: review of rev failed")))))
 
 (ert-deftest godel-test-review-list-findings ()
   (godel-test-with-env
@@ -1129,8 +1151,9 @@ instance-name prompt bug): it waits for the first and gets its buffer."
            (id (plist-get task :id)))
       (add-hook 'godel-event-functions #'godel-review--refresh-lists)
       (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
-                ((symbol-function 'godel-models--run)
-                 (lambda (_p _a callback &rest _) (funcall callback 0 godel-test-reviewer-output))))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a _i _e _m on-exit) (funcall on-exit 0 godel-test-reviewer-output))))
         (godel-reviewer-run (godel-task-get id)))
       (save-window-excursion
         (godel-review-list (godel-task-get id))
@@ -1277,6 +1300,56 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (should-not (godel-new-importable-worktrees repo))
         ;; A fresh session, not a resume, is what R would start.
         (should-not (godel-agent-resumable-p (godel-task-get id)))))))
+
+(ert-deftest godel-test-review-progress-keeps-age ()
+  (godel-test-with-env
+    (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
+           (task (godel-task-create :title "t" :repo repo :base "main"))
+           (id (plist-get task :id)))
+      (godel-task-update id :state 'idle)
+      (let ((before (plist-get (godel-task-get id) :updated)))
+        (sleep-for 0.01)
+        (godel-task-update id :review-activity "Read(x)" :review-status 'running)
+        (should (equal (plist-get (godel-task-get id) :updated) before))
+        (godel-task-update id :state 'working)
+        (should (> (plist-get (godel-task-get id) :updated) before))))))
+
+(ert-deftest godel-test-review-badge ()
+  (let ((now (float-time)))
+    (should-not (godel-board--review-badge '(:review-status nil)))
+    (let ((b (godel-board--review-badge `(:review-status running :review-started ,(- now 18)
+                                          :review-activity "Grep(model_params)"))))
+      (should (equal (car b) "⟳"))
+      (should (string-match-p "\\`reviewing 1[89]s · Grep(model_params)\\'" (cadr b))))
+    (should (equal (cadr (godel-board--review-badge
+                          '(:review-status done :findings ((:state proposed) (:state proposed) (:state dropped)))))
+                   "2 findings"))
+    ;; No findings, or failed: shown until the review list is opened.
+    (should (equal (cadr (godel-board--review-badge '(:review-status done :findings nil))) "no findings"))
+    (should-not (godel-board--review-badge '(:review-status done :findings nil :review-seen t)))
+    (should (equal (cadr (godel-board--review-badge '(:review-status failed))) "review failed"))
+    (should-not (godel-board--review-badge '(:review-status failed :review-seen t)))
+    ;; Findings stay visible until accepted or dropped, even once seen.
+    (should (godel-board--review-badge '(:review-status done :review-seen t :findings ((:state proposed)))))))
+
+(ert-deftest godel-test-reviewer-stream-reader ()
+  "The real stream reader: JSON lines split across chunks arrive whole."
+  (godel-test-with-env
+    (let* ((script (expand-file-name "fake.sh" tmp))
+           msgs exit-out)
+      (with-temp-file script
+        (insert "#!/bin/sh\ncat > /dev/null\n"
+                "printf 'wrapper text\\n{\"type\":\"system\"}\\n{\"type\":\"assis'\n"
+                "sleep 0.2\n"
+                "printf 'tant\",\"n\":1}\\n{\"type\":\"result\",\"result\":\"x\"}\\n'\n"))
+      (set-file-modes script #o755)
+      (godel-reviewer--stream script nil "prompt" process-environment
+                              (lambda (m) (push (alist-get 'type m) msgs))
+                              (lambda (exit out) (setq exit-out (cons exit out))))
+      (should (godel-test-wait (lambda () exit-out) 5))
+      (should (equal (reverse msgs) '("system" "assistant" "result")))
+      (should (= (car exit-out) 0))
+      (should (string-match-p "\"result\":\"x\"" (cdr exit-out))))))
 
 (ert-deftest godel-test-review-history ()
   (godel-test-with-env

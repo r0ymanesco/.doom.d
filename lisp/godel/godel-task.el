@@ -49,6 +49,14 @@ a symbol naming the change (`created', `updated' or `deleted').")
   "File listing repos that have godel tasks."
   (expand-file-name "repos.eld" godel-directory))
 
+(declare-function notifications-notify "notifications" (&rest params))
+
+(defun godel-notify (title body)
+  "Show a desktop notification, or a message if that isn't possible."
+  (unless (and (require 'notifications nil t)
+               (ignore-errors (notifications-notify :title title :body body :app-name "godel")))
+    (message "%s: %s" title body)))
+
 ;;;; Git helpers
 
 (defun godel-task--git (dir &rest args)
@@ -206,12 +214,23 @@ PROPS must include :title and :repo.  :id, :slug, :branch, :worktree,
           (setq out (nconc out (list k v))))))
     out))
 
+(defconst godel-task--quiet-props
+  '(:review-status :review-started :review-activity :review-note :review-seen
+    :findings :finding-seq)
+  "Properties whose changes don't count as the task being updated.
+The board's age column is the time since the agent or you last did
+something; an independent review's progress shouldn't reset it.")
+
 (defun godel-task-update (id &rest props)
   "Set PROPS on task ID, save, run `godel-event-functions', return the task."
-  (let ((task (or (godel-task-get id) (error "godel: no task %s" id))))
+  (let ((task (or (godel-task-get id) (error "godel: no task %s" id)))
+        (quiet t))
     (while props
-      (setq task (plist-put task (pop props) (pop props))))
-    (setq task (plist-put task :updated (float-time)))
+      (let ((key (pop props)))
+        (unless (memq key godel-task--quiet-props) (setq quiet nil))
+        (setq task (plist-put task key (pop props)))))
+    (unless quiet
+      (setq task (plist-put task :updated (float-time))))
     (puthash id task godel-task--tasks)
     (godel-task--save-repo (plist-get task :repo))
     (run-hook-with-args 'godel-event-functions task 'updated)
