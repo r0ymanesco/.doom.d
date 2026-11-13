@@ -1392,7 +1392,43 @@ instance-name prompt bug): it waits for the first and gets its buffer."
   (require 'claude-code-ide-mcp-server)
   (let ((names (mapcar (lambda (spec) (plist-get spec :name)) claude-code-ide-mcp-server-tools)))
     (should (member "godel_add_comment" names))
-    (should (member "godel_list_comments" names))))
+    (should (member "godel_list_comments" names))
+    (should (member "godel_show_location" names))))
+
+(ert-deftest godel-test-walkthrough-show-location ()
+  "The file opens in the main window at the lines, highlighted; the
+walkthrough's window stays selected."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (wt (plist-get task :worktree))
+           (review (get-buffer-create (godel-agent-buffer-name wt "review")))
+           (ctx (list :project-dir wt :buffer review)))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (let ((side (display-buffer-in-side-window review '((side . right)))))
+              (select-window side)
+              (cl-letf (((symbol-function 'claude-code-ide-mcp-server-get-session-context)
+                         (lambda (&rest _) ctx)))
+                (should (equal (godel-reviewer-tool-show-location "app.py" 4 5)
+                               "Showing app.py:4-5 in the user's Emacs (highlighted).")))
+              (sleep-for 0.05)          ; it opens the file on a timer
+              (should (eq (selected-window) side))
+              (let ((main (window-main-window)))
+                (should (equal (buffer-file-name (window-buffer main))
+                               (expand-file-name "app.py" wt)))
+                (with-current-buffer (window-buffer main)
+                  (should (= (line-number-at-pos (window-point main)) 4))
+                  (should (equal (buffer-substring-no-properties
+                                  (overlay-start godel-reviewer--focus-overlay)
+                                  (overlay-end godel-reviewer--focus-overlay))
+                                 "def b():\n    return 20\n"))))
+              ;; Another caller is refused.
+              (setq ctx nil)
+              (should-error (godel-reviewer-tool-show-location "app.py" 1 nil))))
+        (when (overlayp godel-reviewer--focus-overlay) (delete-overlay godel-reviewer--focus-overlay))
+        (kill-buffer review)
+        (when-let* ((b (get-file-buffer (expand-file-name "app.py" wt)))) (kill-buffer b))))))
 
 (ert-deftest godel-test-review-history ()
   (godel-test-with-env

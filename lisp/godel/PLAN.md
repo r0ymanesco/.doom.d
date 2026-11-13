@@ -717,8 +717,16 @@ so the task's state doesn't change. Default model: Not Diamond
   `Edit`, `Write`, `MultiEdit`, `NotebookEdit` and `Bash` are disallowed.
   (Not plan mode: plan mode asks before every MCP tool call, godel's
   included.) godel sends it the diff and asks it to go hunk by hunk,
-  opening each location with the `openFile` tool. You reply in its window.
-  - **It records review comments** with two godel MCP tools, registered on
+  showing each location with `godel_show_location`. You reply in its window.
+  - **It shows each hunk** with `godel_show_location(file, start_line,
+    end_line?)`: the file opens in the main window beside the walkthrough,
+    the lines highlighted (`godel-reviewer-focus`), your cursor stays in the
+    walkthrough. (claude-code-ide's `openFile` isn't a tool the model can
+    call: it's part of the IDE connection Claude Code itself uses.) The tool
+    answers at once and opens the file on a timer, so a prompt from opening
+    it (a Python venv y/n, lsp's import-project question) waits for you
+    instead of timing out Claude's tool call.
+  - **It records review comments** with godel MCP tools, registered on
     claude-code-ide's emacs-tools server (`claude-code-ide-make-tool`):
     `godel_add_comment(file, start_line, end_line?, comment)` adds a pending
     comment marked `[walkthrough]`; `godel_list_comments()` lists the open
@@ -735,8 +743,8 @@ so the task's state doesn't change. Default model: Not Diamond
     connect a few seconds after the session starts (Claude waits).
   - Tested with a real walkthrough: no prompts; it added two comments on its
     own (a missing space, `== None`) and a third when asked in the chat.
-  - Opening files with `openFile` isn't guaranteed (with one small hunk the
-    model explained it in one reply), and there's no tool to delete
+  - Tested with a real walkthrough: it highlighted the hunk beside the
+    chat, with no prompts and no timeouts. There's no tool to delete
     comments: that's the review list's `x` or `SPC G x`.
   - Unlike headless runs, it leaves a normal transcript in the worktree's
     Claude history.

@@ -16,11 +16,12 @@
 ;;
 ;; Walkthrough (`godel-reviewer-walkthrough', v w): an interactive Claude
 ;; session in the task's worktree, a claude-code-ide instance named
-;; "review", that walks you through the diff and opens each location in
-;; Emacs.  It can't change files (editing and shell tools are disallowed;
-;; not plan mode, which asks before every MCP tool call).  You talk to it in
+;; "review", that walks you through the diff, showing each location in
+;; Emacs with godel's `godel_show_location' tool.  It can't change files
+;; (editing and shell tools are disallowed; not plan mode, which asks
+;; before every MCP tool call).  You talk to it in
 ;; its window; it records review comments with godel's MCP tools
-;; (`godel_add_comment', `godel_list_comments', registered on
+;; (`godel_add_comment', `godel_list_comments', `godel_show_location' on
 ;; claude-code-ide's emacs-tools server), both on its own and when you ask
 ;; or agree.  The tools only work for a task's walkthrough session.
 ;;
@@ -344,8 +345,57 @@ Claude session that isn't godel's)."
                              (plist-get c :state) (plist-get c :text))))
                  open "\n"))))
 
+(defface godel-reviewer-focus '((t :inherit highlight :extend t))
+  "Lines the walkthrough is currently showing."
+  :group 'godel)
+
+(defvar godel-reviewer--focus-overlay nil
+  "Highlight of the lines the walkthrough last showed.")
+
+(defun godel-reviewer-tool-show-location (file start_line end_line)
+  "MCP tool: show FILE at START_LINE..END_LINE in the user's Emacs.
+Answers at once and opens the file just after (`godel-reviewer--show'), so
+anything opening it asks (a mode hook's y/n prompt, say) doesn't hold up
+Claude's tool call."
+  (let* ((task (godel-reviewer--calling-task))
+         (file (godel-reviewer--tool-file task file))
+         (start (if (stringp start_line) (string-to-number start_line) start_line))
+         (end (cond ((null end_line) start)
+                    ((stringp end_line) (string-to-number end_line))
+                    (t end_line)))
+         (session (plist-get (claude-code-ide-mcp-server-get-session-context) :buffer)))
+    (unless (and (integerp start) (> start 0)) (error "start_line must be a line number"))
+    (when (< end start) (setq end start))
+    (run-at-time 0 nil #'godel-reviewer--show
+                 (expand-file-name file (plist-get task :worktree)) start end session)
+    (format "Showing %s:%s in the user's Emacs (highlighted)."
+            file (if (= start end) start (format "%d-%d" start end)))))
+
+(defun godel-reviewer--show (path start end session)
+  "Show PATH at lines START..END, highlighted, beside SESSION's window.
+Uses the main window of the frame showing SESSION (not SESSION's own
+window) and leaves the user's cursor where it is."
+  (let* ((buffer (find-file-noselect path))
+         (session-window (and (buffer-live-p session) (get-buffer-window session t)))
+         (frame (if session-window (window-frame session-window) (selected-frame)))
+         (window (with-selected-frame frame
+                   (let ((main (window-main-window)))
+                     (if (and (window-live-p main) (not (eq main session-window)))
+                         main
+                       (display-buffer buffer '(nil (inhibit-same-window . t))))))))
+    (set-window-buffer window buffer)
+    (with-current-buffer buffer
+      (let ((beg (save-excursion (goto-char (point-min)) (forward-line (1- start)) (point)))
+            (stop (save-excursion (goto-char (point-min)) (forward-line end) (point))))
+        (unless (overlayp godel-reviewer--focus-overlay)
+          (setq godel-reviewer--focus-overlay (make-overlay beg stop buffer))
+          (overlay-put godel-reviewer--focus-overlay 'face 'godel-reviewer-focus))
+        (move-overlay godel-reviewer--focus-overlay beg stop buffer)
+        (set-window-point window beg)
+        (with-selected-window window (recenter (max 2 (/ (window-body-height) 4))))))))
+
 (defun godel-reviewer--register-tools ()
-  "Register godel's comment tools on claude-code-ide's MCP tools server."
+  "Register godel's walkthrough tools on claude-code-ide's MCP tools server."
   (claude-code-ide-make-tool
    :function #'godel-reviewer-tool-add-comment
    :name "godel_add_comment"
@@ -354,6 +404,14 @@ Claude session that isn't godel's)."
            (:name "start_line" :type integer :description "First line, in the file as it is now.")
            (:name "end_line" :type integer :description "Last line (defaults to start_line)." :optional t)
            (:name "comment" :type string :description "The comment for the author."))
+   :category "godel")
+  (claude-code-ide-make-tool
+   :function #'godel-reviewer-tool-show-location
+   :name "godel_show_location"
+   :description "Show lines of a file in this task's worktree to the user: opens the file in their Emacs next to this session and highlights the lines, without taking their cursor. Use it for each place you're about to talk about. Only available in a godel walkthrough session."
+   :args '((:name "file" :type string :description "Path relative to the repository root (or absolute inside the worktree).")
+           (:name "start_line" :type integer :description "First line to show, in the file as it is now.")
+           (:name "end_line" :type integer :description "Last line (defaults to start_line)." :optional t))
    :category "godel")
   (claude-code-ide-make-tool
    :function #'godel-reviewer-tool-list-comments
@@ -365,7 +423,8 @@ Claude session that isn't godel's)."
   (godel-reviewer--register-tools))
 
 (defconst godel-reviewer--walkthrough-tools
-  '("mcp__emacs-tools__godel_add_comment" "mcp__emacs-tools__godel_list_comments")
+  '("mcp__emacs-tools__godel_add_comment" "mcp__emacs-tools__godel_list_comments"
+    "mcp__emacs-tools__godel_show_location")
   "godel's tools as Claude names them; allowed without asking in walkthroughs.")
 
 (defun godel-reviewer-walkthrough-prompt (task)
@@ -373,9 +432,10 @@ Claude session that isn't godel's)."
 They're against %s, new files included:
 ```diff
 %s```
-For each hunk: open the file at that spot with the openFile tool, explain
-what changed and why it matters, point out anything questionable, then stop
-and wait for me before the next hunk. Don't change any files.
+For each hunk: show it to me with the godel_show_location tool (file and
+lines as they are now; it opens them in my editor next to this chat),
+explain what changed and why it matters, point out anything questionable,
+then stop and wait for me before the next hunk. Don't change any files.
 
 Record review comments with the godel_add_comment tool (file, lines as they
 are now, and a comment written for the author: what's wrong and what to
