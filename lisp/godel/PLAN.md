@@ -609,7 +609,11 @@ worktree (staging, discarding). Keep that in mind when typing in a diff.
 - **Writing:** a compose buffer with the code shown above; `:wq` saves.
 - **Display:** under its lines, in task diffs and in files of the worktree
   (`godel-comment-mode`), with its state and lines. `gn` / `gp` move between
-  them in diffs. Redrawn whenever the task changes.
+  them in diffs. Redrawn whenever the task changes. The text is an overlay
+  `before-string` at the start of the *next* line, not an `after-string` at
+  the end of the commented one: the cursor can't enter display text, and
+  text after a line's end belongs to that line, so `j` got stuck on it.
+  Only a comment on a buffer's last line hangs off its end.
 - **Keys and magit:** `C`, `gn`, `gp` are in `godel-diff-comment-mode`'s
   evil intercept maps. That isn't enough for `C`: magit puts section keymaps
   on the diff text, which beat every evil and minor-mode map, and

@@ -925,7 +925,17 @@ instance-name prompt bug): it waits for the first and gets its buffer."
           (unwind-protect
               (with-current-buffer buffer
                 (should (= (length godel-comment--overlays) 1))
-                (should (string-match-p "Why 20\\?" (overlay-get (car godel-comment--overlays) 'after-string)))
+                (let ((ov (car godel-comment--overlays)))
+                  ;; Drawn before the next line, so the cursor can move past it.
+                  (should (string-match-p "Why 20\\?" (overlay-get ov 'before-string)))
+                  (should-not (overlay-get ov 'after-string))
+                  (should (= (overlay-start ov)
+                             (save-excursion (goto-char (godel-comment--line ov)) (1+ (line-end-position)))))
+                  ;; Moving down from the commented line reaches the next line.
+                  (goto-char (godel-comment--line ov))
+                  (let ((line (line-number-at-pos)))
+                    (forward-line 1)
+                    (should (= (line-number-at-pos) (1+ line)))))
                 ;; Adding a comment redraws the open diff.
                 (godel-review-add-comment id "new.txt" 1 1 "Is this needed?")
                 (should (= (length godel-comment--overlays) 2))

@@ -303,8 +303,7 @@ Nil too before magit's first refresh, when there are no sections yet."
          (label (format " %s · %s " (plist-get comment :state)
                         (let ((s (plist-get comment :start)) (e (plist-get comment :end)))
                           (if (= s e) (format "line %d" s) (format "lines %d-%d" s e))))))
-    (concat "\n"
-            (mapconcat (lambda (line)
+    (concat (mapconcat (lambda (line)
                          (concat "    " (propertize (concat " " line " ") 'face face)))
                        (split-string (plist-get comment :text) "\n")
                        "\n")
@@ -327,27 +326,42 @@ Nil too before magit's first refresh, when there are no sections yet."
                                     (goto-char (point-min))
                                     (and (zerop (forward-line (1- (plist-get c :end))))
                                          (line-end-position)))))))
-            (let ((ov (make-overlay pos pos nil t nil)))
+            ;; Shown as text *before the next line*, not after this one: Emacs
+            ;; can't put the cursor inside display text, and text after the
+            ;; end of a line belongs to that line, so `j' would get stuck on
+            ;; it.  Only a comment on the last line hangs off its end.
+            (let* ((text (godel-review--comment-string c))
+                   (last (>= pos (point-max)))
+                   (ov (if last (make-overlay pos pos nil t nil)
+                         (make-overlay (1+ pos) (1+ pos) nil nil nil))))
               (overlay-put ov 'godel-comment (plist-get c :id))
-              (overlay-put ov 'after-string (godel-review--comment-string c))
+              (overlay-put ov 'godel-comment-line (save-excursion (goto-char pos)
+                                                                  (line-beginning-position)))
+              (if last
+                  (overlay-put ov 'after-string (concat "\n" text))
+                (overlay-put ov 'before-string (concat text "\n")))
               (push ov godel-comment--overlays))))))
     (setq godel-comment--overlays
           (sort godel-comment--overlays (lambda (a b) (< (overlay-start a) (overlay-start b)))))))
 
+(defun godel-comment--line (ov)
+  "Start of the line OV's comment is on."
+  (overlay-get ov 'godel-comment-line))
+
 (defun godel-comment-next ()
-  "Move to the next comment."
+  "Move to the next comment's line."
   (interactive)
-  (if-let* ((ov (cl-find-if (lambda (o) (> (overlay-start o) (line-end-position)))
+  (if-let* ((ov (cl-find-if (lambda (o) (> (godel-comment--line o) (line-beginning-position)))
                             godel-comment--overlays)))
-      (progn (goto-char (overlay-start ov)) (beginning-of-line))
+      (goto-char (godel-comment--line ov))
     (message "godel: no more comments")))
 
 (defun godel-comment-previous ()
-  "Move to the previous comment."
+  "Move to the previous comment's line."
   (interactive)
-  (if-let* ((ov (cl-find-if (lambda (o) (< (overlay-start o) (line-beginning-position)))
+  (if-let* ((ov (cl-find-if (lambda (o) (< (godel-comment--line o) (line-beginning-position)))
                             (reverse godel-comment--overlays))))
-      (progn (goto-char (overlay-start ov)) (beginning-of-line))
+      (goto-char (godel-comment--line ov))
     (message "godel: no earlier comments")))
 
 (define-minor-mode godel-comment-mode
