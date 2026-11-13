@@ -643,6 +643,7 @@ Updates the variable and resizes the live window if visible."
 (add-to-list 'load-path (expand-file-name "lisp/godel" doom-user-dir))
 (use-package! godel
   :commands (godel-board godel-new-task godel-sidebar-toggle godel-review-comment
+             godel-review-delete-comment-at-point
              godel-review-menu godel-import-worktree godel-refresh-model-options)
   :config (godel-mode 1))
 (map! :leader
@@ -651,6 +652,7 @@ Updates the variable and resizes the live window if visible."
       :desc "New task" "n" #'godel-new-task
       :desc "Sidebar" "o" #'godel-sidebar-toggle
       :desc "Comment on line/region" "c" #'godel-review-comment
+      :desc "Delete comment at point" "x" #'godel-review-delete-comment-at-point
       :desc "Review menu" "v" #'godel-review-menu
       :desc "Import a worktree" "i" #'godel-import-worktree
       :desc "Refresh model list" "M" #'godel-refresh-model-options)

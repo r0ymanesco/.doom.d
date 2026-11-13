@@ -15,6 +15,7 @@ Keys at a glance:
 | Anywhere | `SPC G i` | Import an existing worktree as a task |
 | Anywhere | `SPC G M` | Refresh the model list (and re-check the model pin) |
 | Task diff or file | `SPC G c` | Comment on the line or region |
+| Task diff or file | `SPC G x` | Delete the comment on the line (asks first) |
 | Task diff or file | `SPC G v` | Review menu for that task |
 | Board / sidebar | see Board | `RET` `TAB` `n` `m` `R` `x` `d` `v` `P` `i` `gr` `q` |
 | Task diff | `C`, `gn` / `gp` | Comment; next / previous comment |
@@ -635,7 +636,13 @@ worktree (staging, discarding). Keep that in mind when typing in a diff.
   or marked **outdated** if the text is gone.
 - **States:** pending -> sent (`v s`) -> addressed (when the agent's next
   turn ends), or outdated.
-- **Editing and deleting** happen in the review list (`C`, `x`).
+- **Editing:** `C` (or `SPC G c`) on a commented line edits that comment;
+  also `C` in the review list.
+- **Deleting:** `SPC G x` on the line, in a task diff or a task file
+  (`godel-review-delete-comment-at-point`; asks for confirmation; any shown
+  comment, pending, sent or addressed; asks which if several overlap). Also
+  `x` in the review list. A leader key rather than a diff key, because in a
+  magit diff a wrong key can discard changes (`x` there is magit's discard).
 
 ### Review list (`v l`)
 

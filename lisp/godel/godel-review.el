@@ -284,6 +284,35 @@ comment moves there.  If the text is gone, an open comment becomes
      (concat (mapconcat (lambda (l) (concat "> " l)) (split-string quote "\n") "\n")
              "\n"))))
 
+(defun godel-review-delete-comment-at-point ()
+  "Delete the comment on the line (or region) at point, after confirming.
+Works in task diffs and in files of a task's worktree.  Any comment shown
+there counts (pending, sent or addressed); if several overlap, you pick."
+  (interactive)
+  (pcase-let* ((task (or (godel-review--buffer-task) (user-error "godel: not in a task")))
+               (`(,file ,start ,end) (godel-review--target))
+               (hits (cl-remove-if-not
+                      (lambda (c) (and (equal (plist-get c :file) file)
+                                       (not (eq (plist-get c :state) 'outdated))
+                                       (<= (plist-get c :start) end)
+                                       (>= (plist-get c :end) start)))
+                      (plist-get task :comments)))
+               (label (lambda (c) (format "%s:%s  %s" (plist-get c :file) (plist-get c :start)
+                                          (car (split-string (plist-get c :text) "\n")))))
+               (comment (cond ((null hits) (user-error "godel: no comment on this line"))
+                              ((null (cdr hits)) (car hits))
+                              (t (let ((choices (mapcar (lambda (c) (cons (funcall label c) c)) hits)))
+                                   (cdr (assoc (completing-read "Delete which comment? "
+                                                                (mapcar #'car choices) nil t)
+                                               choices)))))))
+    (deactivate-mark)
+    (when (y-or-n-p (format "Delete the comment \"%s\" on %s:%s? "
+                            (truncate-string-to-width
+                             (car (split-string (plist-get comment :text) "\n")) 50 nil nil "…")
+                            (plist-get comment :file) (plist-get comment :start)))
+      (godel-review-delete-comment (plist-get task :id) (plist-get comment :id))
+      (message "godel: comment deleted"))))
+
 ;;;; Comments: display
 
 (defvar-local godel-comment--overlays nil)

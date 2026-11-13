@@ -1296,6 +1296,45 @@ instance-name prompt bug): it waits for the first and gets its buffer."
                   '(:comments ((:state pending) (:state sent) (:state pending) (:state outdated))))
                  "2 pending, 1 sent, 1 outdated")))
 
+(ert-deftest godel-test-delete-comment-at-point ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id)))
+      (godel-review-add-comment id "app.py" 5 5 "Why 20?")
+      (godel-review-add-comment id "app.py" 2 2 "Fine")
+      (godel-review-update-comment id 2 :state 'addressed)
+      ;; In the diff, on the commented line.
+      (save-window-excursion
+        (godel-review-diff task)
+        (let ((buffer (current-buffer)))
+          (unwind-protect
+              (with-current-buffer buffer
+                (goto-char (point-min))
+                (search-forward "+    return 20")
+                (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+                  (godel-review-delete-comment-at-point))
+                (should (equal (mapcar (lambda (c) (plist-get c :id))
+                                       (plist-get (godel-task-get id) :comments))
+                               '(2)))
+                ;; A line without a comment.
+                (goto-char (point-min))
+                (search-forward "+def c")
+                (should-error (godel-review-delete-comment-at-point) :type 'user-error))
+            (kill-buffer buffer))))
+      ;; In the file: an addressed comment can be deleted too; "no" keeps it.
+      (let ((buffer (find-file-noselect (expand-file-name "app.py" (plist-get task :worktree)))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (forward-line 1)
+              (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+                (godel-review-delete-comment-at-point))
+              (should (= (length (plist-get (godel-task-get id) :comments)) 1))
+              (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+                (godel-review-delete-comment-at-point))
+              (should-not (plist-get (godel-task-get id) :comments)))
+          (kill-buffer buffer))))))
+
 (ert-deftest godel-test-comment-text-faces-complete ()
   "Every character of a comment's display text ends its face list with
 `default', so nothing is borrowed from the line it's drawn in front of."
