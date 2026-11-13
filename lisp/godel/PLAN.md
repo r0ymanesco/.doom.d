@@ -62,7 +62,8 @@ lisp/godel/
   godel-tui.el       ; reading the Claude TUI: input ready, trust dialog
   godel-models.el    ; model/effort list via the SDK initialize request, cache, pin, proxy guard
   godel-status.el    ; hook event receiver -> state machine -> godel-event-functions
-  godel-board.el     ; godel-board-mode (magit-section)
+  godel-board.el     ; godel-board-mode (magit-section): full board and sidebar views
+  godel-sidebar.el   ; the sidebar window: SPC G o, auto-open in task workspaces
   godel-compose.el   ; godel-compose-mode (prompt / comment / feedback editing)
   godel-new.el       ; new-task transient (model/effort pickers) and task creation
   godel-review.el    ; diffs, comments, reviewers, feedback, ship
@@ -353,20 +354,57 @@ fails too, the board marks the task **model mismatch**. godel never uses
 
 ### Board (`SPC G a`)
 
-A `magit-section` buffer grouped by state:
+A `magit-section` buffer grouped **by repo** (alphabetical), then by state
+inside each repo. Empty state groups are hidden. Repo headings show the path
+and a count per state, so a collapsed repo still shows whether it needs you.
 
 ```
-Needs attention (2)
-  ● fix-auth-a1b2     foo   permission: Bash(npm test)        3m
-  ● refactor-db-9f    foo   asking a question                  12m
-Working (1)
-  ◐ add-tabs-c3d4     doom  Edit config.el                     1m
-Fan-out: "speed up startup" (3)
-  ◐ startup-1  opus/high    ✓ startup-2  sonnet/high   ● startup-3  opus/max
-Needs review (1)
-  ✓ ivy-fix-77aa      doom  +42 −8, 3 files · 2 pending comments
-Setting up / Idle / Stopped / Merged ...
+godel · 5 tasks in 2 repos      n new · RET open · m message · R restart · x tear down · gr refresh
+
+▾ doom  ~/.config/doom                                                    ●1 ◐1 ✓1
+    Needs attention (1)
+      ● Fix ivy multi-select     Opus/high      permission: Bash(npm test)      3m
+    Working (1)
+      ◐ Add tab badges           Not Diamond    Edit(config.el)                 1m
+    Needs review (1)
+      ✓ Hello file               Haiku/low      1 file changed, 2 untracked     5m
+
+▾ notdiamond-code-proxy  ~/code/notdiamond-code-proxy                        ◐1 ○1
+    Working (1)
+      ◐ Retry 429s               Sonnet/high    Bash(go test ./...)            30s
+    Idle (1)
+      ○ Bump deps                Not Diamond    Done.                           2h
 ```
+
+`TAB` on a repo heading collapses it (remembered across refreshes). `n` on a
+repo heading creates a task in that repo; on a task, in the task's repo.
+
+### Sidebar (`SPC G o`)
+
+The same board in a narrow window on the left, with the same keys. Compact
+rows: no state sub-headings; within a repo, tasks are in state order and the
+icon shows the state. The task whose workspace you're in is marked `▶`; tasks
+that need you get a second line with the reason.
+
+```
+ godel                ●1 ◐2 ✓1
+▾ doom
+ ▶● Fix ivy multi-se…   3m
+     permission: Bash(npm…)
+  ◐ Add tab badges      1m
+  ✓ Hello file          5m
+▾ notdiamond-code-proxy
+  ◐ Retry 429s         30s
+  ○ Bump deps           2h
+```
+
+- Opens automatically in every task workspace (however you get there).
+- `SPC G o` hides it **everywhere** until `SPC G o` again; in non-task
+  workspaces `SPC G o` opens it too.
+- `RET` switches to the task's workspace and the sidebar comes along; `n`
+  starts a task without leaving the current one.
+- Left side window, kept by `delete-other-windows`, in its own slot so it can
+  share the left side with Treemacs. Claude stays on the right.
 
 | Key | Action |
 |---|---|
@@ -552,6 +590,17 @@ Phase 1 tests for the launch environment:
 - Integration: a Not Diamond task's `SessionStart` reports `notdiamond[1m]`,
   and the proxy log shows routing decisions (not `passthrough`) for it, also
   while a pinned task is running.
+
+**Phase 1.1: board by repo, and the sidebar.** Built 2026-11-13 (see Board
+and Sidebar under Interface). `godel-sidebar.el`; the board and the sidebar
+are two views drawn by `godel-board-mode` (`godel-board--compact`). Tested in
+Doom (terminal mode): repo grouping, `SPC G o` in `main`, `RET` from the
+sidebar (workspace switch, sidebar re-attached, `▶` and tab badge), hidden
+everywhere after `SPC G o` (incl. a workspace whose saved layout had it),
+re-shown in task workspaces, `n` on a task and on a repo heading. Fixed
+along the way: Doom's indent guides in the sidebar (godel opts out through
+`+indent-guides-inhibit-functions`), and row width leaving room for magit's
+"…". 34 ERT tests.
 
 **Phase 2: review and ship.** Diff vs base, `C` comments, pending list,
 feedback via `v s`, ask-the-author, independent reviewer (walkthrough and

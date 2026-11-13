@@ -1,13 +1,16 @@
 ;;; godel-board.el --- The godel board -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; A magit-section buffer listing every task, grouped by state.  It redraws
-;; itself (debounced) whenever a task changes.  See PLAN.md, "Board".
+;; A magit-section buffer listing every task, grouped by repo (alphabetical)
+;; and then by state.  The same mode draws two views: the full board
+;; (`godel-board', SPC G a) and the compact sidebar (godel-sidebar.el,
+;; SPC G o).  Both redraw themselves (debounced) whenever a task changes.
+;; See PLAN.md, "Board" and "Sidebar".
 ;;
 ;;   RET  open the task's workspace     n  new task
 ;;   TAB  show details                  m  message the agent
 ;;   R    restart/resume (new model?)   x  tear down (keeps the branch)
-;;   gr   refresh                       q  quit
+;;   gr   refresh                       q  quit (hides the sidebar)
 
 ;;; Code:
 
@@ -27,8 +30,19 @@
 (declare-function +workspace-exists-p "autoload/workspaces" (name))
 (declare-function +workspace-kill "autoload/workspaces" (workspace &optional inhibit-kill-p))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
+(declare-function +workspace-current-name "autoload/workspaces" ())
+(declare-function godel-sidebar-hide "godel-sidebar" ())
+(declare-function godel-sidebar-sync "godel-sidebar" (&rest _))
+(declare-function indent-bars-mode "indent-bars" (&optional arg))
+(defvar +indent-guides-inhibit-functions)
 
 (defconst godel-board-buffer-name "*godel*")
+(defconst godel-sidebar-buffer-name "*godel-sidebar*")
+
+(defcustom godel-sidebar-width 40
+  "Width of the sidebar window, in columns."
+  :group 'godel
+  :type 'integer)
 
 (defconst godel-board-groups
   '(("Needs attention" needs-attention model-mismatch)
@@ -66,7 +80,7 @@
 (defun godel-board--model-label (task)
   (let ((m (godel-models-find (plist-get task :model))))
     (if (or (null m) (godel-models-router-p m))
-        (or (plist-get m :name) (plist-get task :model))
+        (or (plist-get m :name) (plist-get task :model) "?")
       (format "%s/%s" (plist-get m :name) (or (plist-get task :effort) "?")))))
 
 (defun godel-board--repo-name (task)
@@ -82,12 +96,20 @@
   "R" #'godel-board-restart
   "x" #'godel-board-teardown
   "g r" #'godel-board-refresh
-  "q" #'quit-window)
+  "q" #'godel-board-quit)
+
+(defun godel-board--inhibit-indent-guides-p ()
+  "For Doom's `+indent-guides-inhibit-functions': no guides on the board."
+  (derived-mode-p 'godel-board-mode))
 
 (define-derived-mode godel-board-mode magit-section-mode "godel"
-  "The godel board: every task, grouped by state."
+  "The godel board: every task, grouped by repo and state."
   (setq-local revert-buffer-function (lambda (&rest _) (godel-board-refresh)))
-  (setq truncate-lines t))
+  (setq truncate-lines t)
+  ;; Doom turns indent guides on after any major mode change unless one of
+  ;; these functions says no; they'd draw bars down the sidebar.
+  (when (boundp '+indent-guides-inhibit-functions)
+    (add-hook '+indent-guides-inhibit-functions #'godel-board--inhibit-indent-guides-p)))
 
 (with-eval-after-load 'evil
   (evil-define-key* '(normal motion) godel-board-mode-map
@@ -97,61 +119,162 @@
     "R" #'godel-board-restart
     "x" #'godel-board-teardown
     "gr" #'godel-board-refresh
-    "q" #'quit-window))
+    "q" #'godel-board-quit))
 
 ;;;; Rendering
 
+(defvar-local godel-board--compact nil "Non-nil in the sidebar view.")
 (defvar-local godel-board--expanded nil "IDs of tasks whose details are shown.")
+(defvar-local godel-board--collapsed-repos nil "Repos whose sections are collapsed.")
+
+(defun godel-board--state-rank (state)
+  (or (cl-position-if (lambda (group) (memq state (cdr group))) godel-board-groups) 99))
+
+(defun godel-board--by-repo (tasks)
+  "Group TASKS by repo: ((REPO . TASKS) ...), repos sorted by name then path."
+  (let (groups)
+    (dolist (task tasks)
+      (push task (alist-get (plist-get task :repo) groups nil nil #'equal)))
+    (cl-sort (mapcar (lambda (g) (cons (car g) (nreverse (cdr g)))) groups)
+             (lambda (a b)
+               (let ((na (file-name-nondirectory (directory-file-name a)))
+                     (nb (file-name-nondirectory (directory-file-name b))))
+                 (if (string= na nb) (string< a b) (string< na nb))))
+             :key #'car)))
+
+(defconst godel-board--count-icons
+  '(("●" godel-board-attention needs-attention model-mismatch)
+    ("◐" godel-board-working working setting-up)
+    ("✓" godel-board-review needs-review)
+    ("○" godel-board-dim idle)
+    ("■" godel-board-dim stopped)))
+
+(defun godel-board--counts (tasks)
+  "Counts per state for TASKS, like \"●1 ◐2 ✓1\"."
+  (mapconcat #'identity
+             (delq nil (mapcar (lambda (c)
+                                 (let ((n (cl-count-if (lambda (task) (memq (plist-get task :state)
+                                                                          (cddr c)))
+                                                       tasks)))
+                                   (when (> n 0)
+                                     (propertize (format "%s%d" (car c) n) 'face (cadr c)))))
+                               godel-board--count-icons))
+             " "))
+
+(defun godel-board--current-task-id ()
+  "ID of the task whose workspace is current, if any."
+  (when (fboundp '+workspace-current-name)
+    (plist-get (godel-task-by-slug (ignore-errors (+workspace-current-name))) :id)))
+
+(defun godel-board--icon (task)
+  (let ((state (plist-get task :state)))
+    (propertize (alist-get state godel-board-icons "?") 'face (godel-board--state-face state))))
+
+(defun godel-board--details (task indent)
+  (let ((width (if godel-board--compact (- godel-sidebar-width indent 2) 1000)))
+    (dolist (row `(("id" ,(plist-get task :id))
+                   ("branch" ,(format "%s (from %s)" (plist-get task :branch) (plist-get task :base)))
+                   ("worktree" ,(abbreviate-file-name (plist-get task :worktree)))
+                   ("model" ,(format "%s%s" (godel-board--model-label task)
+                                     (if-let* ((a (plist-get task :model-actual)))
+                                         (format "  (running %s)" a) "")))
+                   ("changes" ,(plist-get task :diffstat))
+                   ("last message" ,(plist-get task :last-message))
+                   ("session" ,(if (godel-agent-live-p task) "running" "not running"))))
+      (when (cadr row)
+        (if godel-board--compact
+            (insert (propertize (format "%s%s: " (make-string indent ?\s) (car row)) 'face 'godel-board-dim)
+                    (truncate-string-to-width (cadr row) (max 10 (- width (length (car row)))) nil nil "…")
+                    "\n")
+          (insert (propertize (format "%s%-13s" (make-string indent ?\s) (car row)) 'face 'godel-board-dim)
+                  (cadr row) "\n"))))))
 
 (defun godel-board--insert-task (task)
-  (let* ((id (plist-get task :id))
-         (state (plist-get task :state))
-         (face (godel-board--state-face state)))
+  "Insert TASK as a full-board row."
+  (let ((id (plist-get task :id))
+        (face (godel-board--state-face (plist-get task :state))))
     (magit-insert-section (godel-task id (not (member id godel-board--expanded)))
       (magit-insert-heading
-        (format "  %s %-32s %-10s %-14s %-50s %s"
-                (propertize (alist-get state godel-board-icons "?") 'face face)
+        (format "      %s %-32s %-14s %-50s %s"
+                (godel-board--icon task)
                 (propertize (truncate-string-to-width (plist-get task :title) 32 nil nil "…")
                             'face 'magit-section-secondary-heading)
-                (propertize (truncate-string-to-width (godel-board--repo-name task) 10 nil nil "…")
-                            'face 'godel-board-dim)
                 (truncate-string-to-width (godel-board--model-label task) 14 nil nil "…")
                 (propertize (truncate-string-to-width (or (plist-get task :last-event) "") 50 nil nil "…")
                             'face face)
                 (propertize (godel-board--age (or (plist-get task :updated) (plist-get task :created)))
                             'face 'godel-board-dim)))
-      (dolist (row `(("id" ,id)
-                     ("branch" ,(format "%s (from %s)" (plist-get task :branch) (plist-get task :base)))
-                     ("worktree" ,(abbreviate-file-name (plist-get task :worktree)))
-                     ("model" ,(format "%s%s" (godel-board--model-label task)
-                                       (if-let* ((a (plist-get task :model-actual)))
-                                           (format "  (running %s)" a) "")))
-                     ("changes" ,(plist-get task :diffstat))
-                     ("last message" ,(plist-get task :last-message))
-                     ("session" ,(if (godel-agent-live-p task) "running" "not running"))))
-        (when (cadr row)
-          (insert (propertize (format "      %-13s" (car row)) 'face 'godel-board-dim)
-                  (cadr row) "\n"))))))
+      (godel-board--details task 8))))
+
+(defun godel-board--insert-task-compact (task current)
+  "Insert TASK as a sidebar row; CURRENT is the ID of the task you're in."
+  (let* ((id (plist-get task :id))
+         (state (plist-get task :state))
+         (age (godel-board--age (or (plist-get task :updated) (plist-get task :created))))
+         ;; Marker, icon and spaces take 4 columns, the age plus a space
+         ;; more, and magit adds "…" after a collapsed row; keep a margin.
+         (title-width (max 8 (- godel-sidebar-width 4 (length age) 1 3)))
+         (attention (memq state '(needs-attention model-mismatch))))
+    (magit-insert-section (godel-task id (not (member id godel-board--expanded)))
+      (magit-insert-heading
+        (concat (if (equal id current) (propertize "▶" 'face 'godel-board-working) " ")
+                (godel-board--icon task) " "
+                (propertize (truncate-string-to-width (plist-get task :title) title-width nil ?\s "…")
+                            'face (if (equal id current) 'magit-section-highlight
+                                    'magit-section-secondary-heading))
+                " " (propertize age 'face 'godel-board-dim)
+                (when attention
+                  (concat "\n    "
+                          (propertize (truncate-string-to-width (or (plist-get task :last-event) "")
+                                                                (- godel-sidebar-width 8) nil nil "…")
+                                      'face 'godel-board-attention)))))
+      (godel-board--details task 4))))
+
+(defun godel-board--insert-header (tasks repos)
+  (if godel-board--compact
+      (insert (propertize " godel" 'face 'magit-section-heading)
+              "  " (godel-board--counts tasks) "\n")
+    (insert (propertize (format "godel · %d task%s in %d repo%s"
+                                (length tasks) (if (= 1 (length tasks)) "" "s")
+                                (length repos) (if (= 1 (length repos)) "" "s"))
+                        'face 'magit-section-heading)
+            (propertize "      n new · RET open · m message · R restart · x tear down · gr refresh\n\n"
+                        'face 'godel-board-dim))))
 
 (defun godel-board--render ()
-  (let ((inhibit-read-only t)
-        (tasks (godel-task-all)))
+  (let* ((inhibit-read-only t)
+         (tasks (godel-task-all))
+         (repos (godel-board--by-repo tasks))
+         (current (and godel-board--compact (godel-board--current-task-id))))
     (erase-buffer)
     (magit-insert-section (godel-root)
-      (insert (propertize (format "godel · %d task%s" (length tasks) (if (= 1 (length tasks)) "" "s"))
-                          'face 'magit-section-heading)
-              (propertize "   n new · RET open · m message · R restart · x tear down · gr refresh\n\n"
-                          'face 'godel-board-dim))
+      (godel-board--insert-header tasks repos)
       (when (null tasks)
-        (insert "  No tasks yet.  Press n to create one.\n"))
-      (pcase-dolist (`(,label . ,states) godel-board-groups)
-        (let ((group (cl-remove-if-not (lambda (task) (memq (plist-get task :state) states))
-                                       tasks)))
-          (when group
-            (magit-insert-section (godel-group (car states))
-              (magit-insert-heading (format "%s (%d)" label (length group)))
-              (mapc #'godel-board--insert-task group)
-              (insert "\n"))))))
+        (insert (if godel-board--compact " No tasks.  n creates one.\n"
+                  "  No tasks yet.  Press n to create one.\n")))
+      (pcase-dolist (`(,repo . ,rtasks) repos)
+        (magit-insert-section (godel-repo repo (member repo godel-board--collapsed-repos))
+          (let ((name (file-name-nondirectory (directory-file-name repo))))
+            (magit-insert-heading
+              (if godel-board--compact
+                  (propertize name 'face 'magit-section-heading)
+                (concat (propertize name 'face 'magit-section-heading) "  "
+                        (propertize (abbreviate-file-name (directory-file-name repo))
+                                    'face 'godel-board-dim)
+                        "    " (godel-board--counts rtasks)))))
+          (if godel-board--compact
+              (dolist (task (cl-stable-sort (copy-sequence rtasks) #'<
+                                            :key (lambda (task) (godel-board--state-rank
+                                                                 (plist-get task :state)))))
+                (godel-board--insert-task-compact task current))
+            (pcase-dolist (`(,label . ,states) godel-board-groups)
+              (let ((group (cl-remove-if-not (lambda (task) (memq (plist-get task :state) states))
+                                             rtasks)))
+                (when group
+                  (magit-insert-section (godel-group (cons repo (car states)))
+                    (magit-insert-heading (format "    %s (%d)" label (length group)))
+                    (mapc #'godel-board--insert-task group)))))
+            (insert "\n")))))
     ;; magit-insert-section only records HIDE; apply it (magit's own buffers
     ;; do this during their refresh).
     (magit-map-sections (lambda (s) (when (oref s hidden) (magit-section-hide s))))))
@@ -159,55 +282,79 @@
 (defun godel-board--task-id-at-point ()
   (magit-section-value-if 'godel-task))
 
-(defun godel-board--remember-expanded ()
-  (let (ids)
+(defun godel-board--repo-at-point ()
+  "Repo of the task or repo heading at point, if any."
+  (or (when-let* ((id (godel-board--task-id-at-point)))
+        (plist-get (godel-task-get id) :repo))
+      (magit-section-value-if 'godel-repo)
+      (car-safe (magit-section-value-if 'godel-group))))
+
+(defun godel-board--remember-visibility ()
+  (let (expanded collapsed)
     (when magit-root-section
       (magit-map-sections
        (lambda (s)
-         (when (and (eq (oref s type) 'godel-task) (not (oref s hidden)))
-           (push (oref s value) ids)))))
-    (setq godel-board--expanded ids)))
+         (pcase (oref s type)
+           ('godel-task (unless (oref s hidden) (push (oref s value) expanded)))
+           ('godel-repo (when (oref s hidden) (push (oref s value) collapsed)))))))
+    (setq godel-board--expanded expanded
+          godel-board--collapsed-repos collapsed)))
+
+(defun godel-board--refresh-buffer (buffer)
+  "Redraw BUFFER, keeping point on the same task or repo."
+  (with-current-buffer buffer
+    (let* ((section (magit-current-section))
+           (type (and section (oref section type)))
+           (value (and section (oref section value)))
+           (line (line-number-at-pos))
+           (windows (get-buffer-window-list buffer nil t)))
+      (godel-board--remember-visibility)
+      (godel-board--render)
+      (goto-char (point-min))
+      (or (and (memq type '(godel-task godel-repo))
+               (cl-block found
+                 (magit-map-sections
+                  (lambda (s)
+                    (when (and (eq (oref s type) type) (equal (oref s value) value))
+                      (goto-char (oref s start))
+                      (cl-return-from found t))))))
+          (forward-line (1- line)))
+      (dolist (w windows) (set-window-point w (point))))))
 
 (defun godel-board-refresh ()
-  "Redraw the board, keeping point on the same task."
+  "Redraw the board and the sidebar."
   (interactive)
-  (when-let* ((buffer (get-buffer godel-board-buffer-name)))
-    (with-current-buffer buffer
-      (let ((id (godel-board--task-id-at-point))
-            (line (line-number-at-pos))
-            (windows (get-buffer-window-list buffer nil t)))
-        (godel-board--remember-expanded)
-        (godel-board--render)
-        (goto-char (point-min))
-        (or (and id (cl-block found
-                      (magit-map-sections
-                       (lambda (s)
-                         (when (and (eq (oref s type) 'godel-task) (equal (oref s value) id))
-                           (goto-char (oref s start))
-                           (cl-return-from found t))))))
-            (forward-line (1- line)))
-        (dolist (w windows) (set-window-point w (point)))))))
+  (dolist (name (list godel-board-buffer-name godel-sidebar-buffer-name))
+    (when-let* ((buffer (get-buffer name)))
+      (godel-board--refresh-buffer buffer))))
 
 (defvar godel-board--timer nil)
 
 (defun godel-board--schedule (&rest _)
-  "Redraw the board soon (debounced), if it exists."
-  (when (and (get-buffer godel-board-buffer-name) (not godel-board--timer))
+  "Redraw the board and sidebar soon (debounced), if either exists."
+  (when (and (or (get-buffer godel-board-buffer-name) (get-buffer godel-sidebar-buffer-name))
+             (not godel-board--timer))
     (setq godel-board--timer
           (run-with-timer 0.2 nil (lambda ()
                                     (setq godel-board--timer nil)
                                     (godel-board-refresh))))))
 
+(defun godel-board-buffer (&optional compact)
+  "Return the board buffer (or with COMPACT, the sidebar's), drawn."
+  (godel-task-load-all)
+  (let ((buffer (get-buffer-create (if compact godel-sidebar-buffer-name godel-board-buffer-name))))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'godel-board-mode) (godel-board-mode))
+      (when (bound-and-true-p indent-bars-mode) (indent-bars-mode -1))
+      (setq godel-board--compact compact)
+      (godel-board--refresh-buffer buffer))
+    buffer))
+
 ;;;###autoload
 (defun godel-board ()
   "Show the godel board."
   (interactive)
-  (godel-task-load-all)
-  (let ((buffer (get-buffer-create godel-board-buffer-name)))
-    (with-current-buffer buffer
-      (unless (derived-mode-p 'godel-board-mode) (godel-board-mode))
-      (godel-board-refresh))
-    (switch-to-buffer buffer)))
+  (switch-to-buffer (godel-board-buffer)))
 
 ;;;; Commands
 
@@ -216,10 +363,14 @@
       (user-error "godel: no task at point")))
 
 (defun godel-board-new ()
-  "Create a task in the repo of the task at point, or ask."
+  "Create a task in the repo at point (task or repo heading), or ask."
   (interactive)
-  (godel-new-task (when-let* ((id (godel-board--task-id-at-point)))
-                    (plist-get (godel-task-get id) :repo))))
+  (godel-new-task (godel-board--repo-at-point)))
+
+(defun godel-board-quit ()
+  "Quit the board; in the sidebar, hide it (everywhere, until SPC G o)."
+  (interactive)
+  (if godel-board--compact (godel-sidebar-hide) (quit-window)))
 
 (defun godel-board-visit ()
   "Open the task's workspace: magit-status on the left, Claude on the right."
@@ -228,13 +379,17 @@
          (buffer (godel-agent-buffer task)))
     (when (fboundp '+workspace-switch)
       (+workspace-switch (plist-get task :slug) t))
+    ;; From the sidebar the selected window is a side window, which can't be
+    ;; made the only window.
+    (select-window (window-main-window))
     (delete-other-windows)
     (if (file-directory-p (plist-get task :worktree))
         (magit-status-setup-buffer (plist-get task :worktree))
       (dired (plist-get task :repo)))
     (if (and buffer (fboundp 'claude-code-ide--display-buffer-in-side-window))
         (select-window (claude-code-ide--display-buffer-in-side-window buffer))
-      (message "godel: no running session; R on the board restarts it"))))
+      (message "godel: no running session; R on the board restarts it"))
+    (when (fboundp 'godel-sidebar-sync) (godel-sidebar-sync))))
 
 (defun godel-board-message ()
   "Send a message to the task's agent."

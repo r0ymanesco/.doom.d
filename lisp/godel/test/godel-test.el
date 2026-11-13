@@ -446,6 +446,122 @@ The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
       (should (equal (godel-workspace-badge slug) ""))
       (should (equal (godel-workspace-badge "main") "")))))
 
+(defun godel-test-board-tasks (tmp)
+  "Two repos (zeta, alpha) with tasks in several states; returns the tasks."
+  (let* ((zeta (godel-test-repo (expand-file-name "zeta" tmp)))
+         (alpha (godel-test-repo (expand-file-name "alpha" tmp)))
+         (a1 (godel-task-create :title "Alpha working" :repo alpha :base "main"))
+         (a2 (godel-task-create :title "Alpha needs me" :repo alpha :base "main"))
+         (z1 (godel-task-create :title "Zeta review" :repo zeta :base "main")))
+    (godel-task-update (plist-get a1 :id) :state 'working :last-event "Edit(x.el)")
+    (godel-task-update (plist-get a2 :id) :state 'needs-attention
+                       :last-event "permission: Bash(npm test)")
+    (godel-task-update (plist-get z1 :id) :state 'needs-review)
+    (list a1 a2 z1)))
+
+(defun godel-test-text-order-p (&rest strings)
+  "Non-nil if STRINGS appear in the current buffer in this order."
+  (goto-char (point-min))
+  (cl-every (lambda (s) (search-forward s nil t)) strings))
+
+(ert-deftest godel-test-board-groups-by-repo ()
+  (godel-test-with-env
+    (godel-test-board-tasks tmp)
+    (with-current-buffer (godel-board-buffer)
+      (unwind-protect
+          (progn
+            (should (godel-test-text-order-p "2 repos" "alpha" "Needs attention (1)" "Alpha needs me"
+                                             "Working (1)" "Alpha working"
+                                             "zeta" "Needs review (1)" "Zeta review"))
+            ;; Repo heading counts; no repo column in task rows.
+            (should (godel-test-text-order-p "alpha" "●1 ◐1"))
+            (goto-char (point-min))
+            (search-forward "Alpha working")
+            (should-not (let ((case-fold-search nil))
+                          (string-match-p "alpha" (buffer-substring (line-beginning-position)
+                                                                    (line-end-position)))))
+            ;; n on a repo heading uses that repo.
+            (goto-char (point-min))
+            (search-forward "zeta")
+            (should (string-suffix-p "/zeta/" (godel-board--repo-at-point)))
+            ;; A collapsed repo stays collapsed across refreshes.
+            (magit-section-hide (magit-current-section))
+            (godel-board-refresh)
+            (let (hidden)
+              (magit-map-sections (lambda (sec) (when (eq (oref sec type) 'godel-repo)
+                                                  (push (cons (file-name-nondirectory
+                                                               (directory-file-name (oref sec value)))
+                                                              (oref sec hidden))
+                                                        hidden))))
+              (should (equal (cdr (assoc "zeta" hidden)) t))
+              (should (equal (cdr (assoc "alpha" hidden)) nil))))
+        (kill-buffer)))))
+
+(ert-deftest godel-test-sidebar-compact-view ()
+  (godel-test-with-env
+    (let* ((tasks (godel-test-board-tasks tmp))
+           (current (plist-get (nth 0 tasks) :slug)))
+      (cl-letf (((symbol-function '+workspace-current-name) (lambda () current)))
+        (with-current-buffer (godel-board-buffer t)
+          (unwind-protect
+              (progn
+                (should-not (godel-test-text-order-p "Needs attention"))
+                ;; Within alpha, state order: the attention task comes first.
+                (should (godel-test-text-order-p "alpha" "Alpha needs me" "permission: Bash"
+                                                 "Alpha working" "zeta" "Zeta review"))
+                (goto-char (point-min))
+                (search-forward "Alpha working")
+                (should (string-prefix-p "▶" (buffer-substring (line-beginning-position)
+                                                               (line-end-position))))
+                (goto-char (point-min))
+                (search-forward "Zeta review")
+                (should-not (string-prefix-p "▶" (buffer-substring (line-beginning-position)
+                                                                   (line-end-position))))
+                ;; Room for magit's "…" after a collapsed row.
+                (should (<= (string-width (buffer-substring (line-beginning-position)
+                                                            (line-end-position)))
+                            (- godel-sidebar-width 3))))
+            (kill-buffer)))))))
+
+(ert-deftest godel-test-sidebar-toggle-and-sync ()
+  (godel-test-with-env
+    (let* ((tasks (godel-test-board-tasks tmp))
+           (workspace "main")
+           (godel-sidebar-hidden nil)
+           (godel-sidebar-auto-open t))
+      (cl-letf (((symbol-function '+workspace-current-name) (lambda () workspace)))
+        (unwind-protect
+            (progn
+              (delete-other-windows)
+              ;; Not a task workspace: sync doesn't open it.
+              (godel-sidebar-sync)
+              (godel-test-wait (lambda () nil) 0.2)
+              (should-not (godel-sidebar-window))
+              ;; Toggle opens it anywhere; it's a left side window.
+              (godel-sidebar-toggle)
+              (should (godel-sidebar-window))
+              (should (eq (window-parameter (godel-sidebar-window) 'window-side) 'left))
+              ;; delete-other-windows keeps it.
+              (with-selected-window (window-main-window) (delete-other-windows))
+              (should (godel-sidebar-window))
+              ;; Toggle hides it, and it stays hidden after switching to a task.
+              (godel-sidebar-toggle)
+              (should-not (godel-sidebar-window))
+              (should godel-sidebar-hidden)
+              (setq workspace (plist-get (nth 0 tasks) :slug))
+              (godel-sidebar-sync)
+              (godel-test-wait (lambda () nil) 0.2)
+              (should-not (godel-sidebar-window))
+              ;; Toggled back on: a task workspace re-attaches it after a switch
+              ;; that dropped it.
+              (godel-sidebar-toggle)
+              (should-not godel-sidebar-hidden)
+              (delete-window (godel-sidebar-window))
+              (godel-sidebar-sync)
+              (should (godel-test-wait #'godel-sidebar-window 1)))
+          (godel-sidebar--remove)
+          (when (get-buffer godel-sidebar-buffer-name) (kill-buffer godel-sidebar-buffer-name)))))))
+
 (ert-deftest godel-test-reconcile-marks-dead-sessions-stopped ()
   (godel-test-with-env
     (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))

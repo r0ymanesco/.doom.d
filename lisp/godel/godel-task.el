@@ -146,6 +146,11 @@ worktrees of a repo map to the same root."
   (cl-find session-id (hash-table-values godel-task--tasks)
            :key (lambda (task) (plist-get task :session-id)) :test #'equal))
 
+(defun godel-task-by-slug (slug)
+  "Return the task with SLUG (also its Doom workspace name), or nil."
+  (and slug (cl-find slug (hash-table-values godel-task--tasks)
+                     :key (lambda (task) (plist-get task :slug)) :test #'equal)))
+
 (defun godel-task-by-directory (dir)
   "Return the task whose worktree contains DIR."
   (let ((dir (file-name-as-directory (expand-file-name dir))))

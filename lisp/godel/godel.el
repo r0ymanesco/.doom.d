@@ -26,10 +26,12 @@
 (require 'godel-compose)
 (require 'godel-new)
 (require 'godel-board)
+(require 'godel-sidebar)
 (require 'godel-api)
 
 (declare-function notifications-notify "notifications" (&rest params))
 (defvar claude-code-ide-buffer-name-function)
+(defvar persp-activated-functions)
 (defvar server-name)
 (declare-function server-running-p "server" (&optional name))
 
@@ -85,8 +87,7 @@
 
 (defun godel-workspace-badge (name)
   "Badge for the Doom workspace NAME if it belongs to a task, else \"\"."
-  (if-let* ((task (cl-find name (godel-task-all)
-                           :key (lambda (task) (plist-get task :slug)) :test #'equal)))
+  (if-let* ((task (godel-task-by-slug name)))
       (pcase (plist-get task :state)
         ((or 'needs-attention 'model-mismatch) "●")
         ('needs-review "✓")
@@ -126,9 +127,14 @@ for them can't arrive.  Reviewable states are kept."
         (godel-task-load-all)
         (godel--reconcile)
         (add-hook 'godel-event-functions #'godel--notify)
+        ;; Doom's workspace hook isn't a normal hook; config.el uses add-to-list too.
+        (when (boundp 'persp-activated-functions)
+          (add-to-list 'persp-activated-functions #'godel-sidebar-sync 'append))
         (add-to-list 'global-mode-string 'godel-mode-line t)
         (godel-models-refresh-if-stale))
     (remove-hook 'godel-event-functions #'godel--notify)
+    (when (boundp 'persp-activated-functions)
+      (setq persp-activated-functions (delq #'godel-sidebar-sync persp-activated-functions)))
     (setq global-mode-string (delq 'godel-mode-line global-mode-string))
     (when godel--saved-buffer-name-function
       (setq claude-code-ide-buffer-name-function godel--saved-buffer-name-function))))
