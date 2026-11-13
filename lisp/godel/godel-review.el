@@ -44,13 +44,25 @@
 (declare-function evil-make-intercept-map "evil-core" (keymap &optional state aux))
 (declare-function evil-normalize-keymaps "evil-core" (&optional state))
 
-(defface godel-comment '((t :inherit font-lock-doc-face :box (:line-width -1)))
-  "Review comments shown in diffs and files."
+(defface godel-comment '((t :inherit default))
+  "Text of open (pending) review comments shown in diffs and files."
   :group 'godel)
 
-(defface godel-comment-dim '((t :inherit (shadow godel-comment)))
-  "Sent, addressed or outdated review comments."
+(defface godel-comment-dim '((t :inherit shadow))
+  "Text of sent, addressed or outdated review comments."
   :group 'godel)
+
+(defface godel-comment-meta '((t :inherit shadow :slant italic))
+  "The state and lines under a review comment."
+  :group 'godel)
+
+(defface godel-comment-bar '((t :weight bold))
+  "The bar in front of a review comment; coloured by its state."
+  :group 'godel)
+
+(defconst godel-review--state-colours
+  '((pending . yellow) (sent . blue) (addressed . green) (outdated . white))
+  "Theme ANSI colour of the bar for each comment state.")
 
 ;;;; Git helpers
 
@@ -297,17 +309,26 @@ Nil too before magit's first refresh, when there are no sections yet."
                    (forward-line 1)))))))))
     nil))
 
+(defun godel-review--bar-face (state)
+  "The bar's face for a comment in STATE: the theme's colour, foreground only."
+  (let* ((colour (alist-get state godel-review--state-colours))
+         (fg (and colour (not (eq state 'outdated))
+                  (face-foreground (intern (format "ansi-color-%s" colour)) nil t))))
+    (if fg (list 'godel-comment-bar (list :foreground fg)) '(godel-comment-bar shadow))))
+
 (defun godel-review--comment-string (comment)
-  (let* ((open (memq (plist-get comment :state) '(pending sent)))
-         (face (if (eq (plist-get comment :state) 'pending) 'godel-comment 'godel-comment-dim))
-         (label (format " %s · %s " (plist-get comment :state)
-                        (let ((s (plist-get comment :start)) (e (plist-get comment :end)))
-                          (if (= s e) (format "line %d" s) (format "lines %d-%d" s e))))))
-    (concat (mapconcat (lambda (line)
-                         (concat "    " (propertize (concat " " line " ") 'face face)))
+  "COMMENT as display text: a coloured bar, its text, then its state and lines.
+No boxes or backgrounds: the text uses the normal text colour so it stays
+readable on any theme."
+  (let* ((state (plist-get comment :state))
+         (text-face (if (eq state 'pending) 'godel-comment 'godel-comment-dim))
+         (bar (propertize "    ▍ " 'face (godel-review--bar-face state)))
+         (s (plist-get comment :start)) (e (plist-get comment :end))
+         (meta (format "%s · %s" state (if (= s e) (format "line %d" s) (format "lines %d-%d" s e)))))
+    (concat (mapconcat (lambda (line) (concat bar (propertize line 'face text-face)))
                        (split-string (plist-get comment :text) "\n")
                        "\n")
-            "\n    " (propertize label 'face (if open 'shadow 'godel-comment-dim)))))
+            "\n" bar (propertize meta 'face 'godel-comment-meta))))
 
 (defun godel-comment-refresh ()
   "Redraw this buffer's comment overlays."

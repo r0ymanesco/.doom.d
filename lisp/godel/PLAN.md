@@ -613,7 +613,12 @@ worktree (staging, discarding). Keep that in mind when typing in a diff.
   `before-string` at the start of the *next* line, not an `after-string` at
   the end of the commented one: the cursor can't enter display text, and
   text after a line's end belongs to that line, so `j` got stuck on it.
-  Only a comment on a buffer's last line hangs off its end.
+  Only a comment on a buffer's last line hangs off its end. Style: a `▍`
+  bar coloured by state (theme foreground: yellow pending, blue sent, green
+  addressed, grey outdated), the text in the normal text colour (greyed once
+  sent or done), and a grey italic state line; no boxes or backgrounds, which
+  made the first version unreadable (faces `godel-comment`,
+  `godel-comment-dim`, `godel-comment-meta`, `godel-comment-bar`).
 - **Keys and magit:** `C`, `gn`, `gp` are in `godel-diff-comment-mode`'s
   evil intercept maps. That isn't enough for `C`: magit puts section keymaps
   on the diff text, which beat every evil and minor-mode map, and
