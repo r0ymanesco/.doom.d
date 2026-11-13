@@ -1274,7 +1274,11 @@ dropped."
     (cons gh log)))
 
 (ert-deftest godel-test-ship-execute ()
-  "Commit, push to a real (local) remote, and open the PR with gh."
+  "Commit, push to a real (local) remote, and open the PR with gh; tell
+the author's (running) session what was shipped."
+  (let (sent)
+  (cl-letf (((symbol-function 'godel-agent-live-p) (lambda (_) t))
+            ((symbol-function 'godel-agent-send) (lambda (_ text) (push text sent))))
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp))
            (id (plist-get task :id))
@@ -1290,11 +1294,15 @@ dropped."
       (let ((default-directory (plist-get task :worktree)))
         (call-process "git" nil nil nil "config" "user.email" "t@t")
         (call-process "git" nil nil nil "config" "user.name" "t"))
+      (godel-task-update id :state 'needs-review)
       (godel-ship-execute (godel-task-get id) "Change b and add c\n\nDetails." "Change b" "PR body")
       (should (godel-test-wait done 20))
       (should (equal (plist-get (godel-task-get id) :pr-url) "https://github.com/me/repo/pull/7"))
       (should (equal (plist-get (godel-task-get id) :last-event)
                      "PR opened: https://github.com/me/repo/pull/7"))
+      (should (string-match-p (format "committed your changes as %s (\"Change b and add c\") and pushed .*opened a pull request: https://github.com/me/repo/pull/7\\."
+                                      (godel-task--git (plist-get task :worktree) "rev-parse" "--short" "HEAD"))
+                              (car sent)))
       (should (equal (godel-task--git (plist-get task :worktree) "log" "-1" "--format=%s") "Change b and add c"))
       (should (equal (godel-task--git (plist-get task :worktree) "status" "--porcelain") ""))
       (should (equal (godel-task--git remote "rev-parse" (plist-get task :branch))
@@ -1310,11 +1318,34 @@ dropped."
       (godel-ship-execute (godel-task-get id) "More" nil nil)
       (should (godel-test-wait done 20))
       (should (equal (plist-get (godel-task-get id) :last-event) "pushed"))
+      (should (string-match-p "which updates the pull request https://github.com/me/repo/pull/7\\." (car sent)))
+      (should (= (length sent) 2))
       (should-not (file-exists-p (cdr fake)))
       (should (equal (godel-task--git remote "rev-parse" (plist-get task :branch))
                      (godel-task--git (plist-get task :worktree) "rev-parse" "HEAD")))
       (with-temp-file (expand-file-name "x.txt" (plist-get task :worktree)) (insert "x\n"))
-      (should-error (godel-ship-execute (godel-task-get id) nil nil nil) :type 'user-error))))
+      (should-error (godel-ship-execute (godel-task-get id) nil nil nil) :type 'user-error))))))
+
+(ert-deftest godel-test-ship-pr-display ()
+  "The PR shows on the board row (#N) and in its details; gp opens it."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           opened)
+      (godel-task-update id :pr-url "https://github.com/me/repo/pull/308")
+      (should (equal (godel-ship-pr-number (godel-task-get id)) "308"))
+      (cl-letf (((symbol-function 'browse-url) (lambda (url &rest _) (setq opened url))))
+        (godel-ship-browse-pr (godel-task-get id)))
+      (should (equal opened "https://github.com/me/repo/pull/308"))
+      (with-temp-buffer
+        (godel-board-mode)
+        (let ((inhibit-read-only t)) (godel-board--insert-task (godel-task-get id)))
+        (should (string-match-p "#308" (buffer-string))))
+      (with-temp-buffer
+        (godel-board--details (godel-task-get id) 8)
+        (should (string-match-p "PR +https://github.com/me/repo/pull/308   gp opens it" (buffer-string))))
+      (godel-task-update id :pr-url nil)
+      (should-error (godel-ship-browse-pr (godel-task-get id)) :type 'user-error))))
 
 (ert-deftest godel-test-ship-check-merged ()
   (godel-test-with-env

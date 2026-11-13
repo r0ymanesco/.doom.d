@@ -29,6 +29,9 @@
 (declare-function godel-review-diff "godel-review" (task))
 (declare-function godel-review-menu "godel-review" (&optional task))
 (declare-function godel-ship "godel-ship" (task))
+(declare-function godel-ship-browse-pr "godel-ship" (task))
+(declare-function godel-ship-pr-number "godel-ship" (task))
+(declare-function godel-ship-drafting "godel-ship" (task))
 (declare-function godel-import-worktree "godel-new" (&optional repo))
 (declare-function godel-ship-check-merged "godel-ship" ())
 (declare-function godel-new--read-model "godel-new" (prompt initial history))
@@ -138,6 +141,7 @@ board) removes plain `face' properties when it fontifies."
   "v" #'godel-board-review
   "P" #'godel-board-ship
   "i" #'godel-board-import
+  "g p" #'godel-board-browse-pr
   "g r" #'godel-board-refresh
   "q" #'godel-board-quit)
 
@@ -165,6 +169,7 @@ board) removes plain `face' properties when it fontifies."
     "v" #'godel-board-review
     "P" #'godel-board-ship
     "i" #'godel-board-import
+    "gp" #'godel-board-browse-pr
     "gr" #'godel-board-refresh
     "q" #'godel-board-quit))
 
@@ -227,6 +232,9 @@ board) removes plain `face' properties when it fontifies."
                                      (if-let* ((a (plist-get task :model-actual)))
                                          (format "  (running %s)" a) "")))
                    ("changes" ,(plist-get task :diffstat))
+                   ("PR" ,(when-let* ((url (plist-get task :pr-url)))
+                            (concat url (if (eq (plist-get task :state) 'merged) "  (merged)" "")
+                                    (if godel-board--compact "" "   gp opens it"))))
                    ("comments" ,(godel-board--comment-summary task))
                    ("review" ,(plist-get task :review-note))
                    ("last message" ,(plist-get task :last-message))
@@ -282,10 +290,16 @@ findings, or a failed one: until the review list has been opened."
         (face (godel-board--state-face (plist-get task :state))))
     (magit-insert-section (godel-task id (not (member id godel-board--expanded)))
       (magit-insert-heading
-        (format "      %s %-32s %-14s %-50s %s%s"
+        (format "      %s %-32s %-6s %-14s %-50s %s%s"
                 (godel-board--icon task)
                 (godel-board--paint (truncate-string-to-width (plist-get task :title) 32 nil nil "…")
                             'magit-section-secondary-heading)
+                (if-let* ((n (and (fboundp 'godel-ship-pr-number) (godel-ship-pr-number task))))
+                    (godel-board--paint (concat "#" n)
+                                        (if (eq (plist-get task :state) 'merged)
+                                            (godel-board--state-face 'merged)
+                                          (godel-board--state-face 'needs-review)))
+                  "")
                 (truncate-string-to-width (godel-board--model-label task) 14 nil nil "…")
                 (godel-board--paint (truncate-string-to-width (or (plist-get task :last-event) "") 50 nil nil "…")
                             face)
@@ -334,7 +348,7 @@ findings, or a failed one: until the review list has been opened."
                                 (length tasks) (if (= 1 (length tasks)) "" "s")
                                 (length repos) (if (= 1 (length repos)) "" "s"))
                         'magit-section-heading)
-            (godel-board--paint "      n new · RET open · m message · R restart · x tear down · gr refresh\n\n"
+            (godel-board--paint "      n new · RET open · m message · R restart · x tear down · gp open PR · gr refresh\n\n"
                         'godel-board-dim))))
 
 (defun godel-board--render ()
@@ -562,6 +576,12 @@ workspace."
   (interactive)
   (require 'godel-ship)
   (godel-ship (godel-board--task)))
+
+(defun godel-board-browse-pr ()
+  "Open the pull request of the task at point in the browser."
+  (interactive)
+  (require 'godel-ship)
+  (godel-ship-browse-pr (godel-board--task)))
 
 (defun godel-board-import ()
   "Make an existing worktree of the repo at point (or this repo) a task."

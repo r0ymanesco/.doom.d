@@ -17,7 +17,7 @@ Keys at a glance:
 | Task diff or file | `SPC G c` | Comment on the line or region |
 | Task diff or file | `SPC G x` | Delete the comment on the line (asks first) |
 | Task diff or file | `SPC G v` | Review menu for that task |
-| Board / sidebar | see Board | `RET` `TAB` `n` `m` `R` `x` `d` `v` `P` `i` `gr` `q` |
+| Board / sidebar | see Board | `RET` `TAB` `n` `m` `R` `x` `d` `v` `P` `i` `gp` `gr` `q` |
 | Task diff | `C`, `gn` / `gp` | Comment; next / previous comment |
 | Review list | `RET` `C` `x` `a` `s` | Visit, edit, delete/drop, accept finding, send |
 | Compose buffer | `:wq` / `:q!` | Submit / cancel |
@@ -454,6 +454,7 @@ Keys (the same in the sidebar):
 | `d` | The task's diff with comments (see Review) |
 | `v` | Review menu (see Review) |
 | `P` | Ship (see Ship) |
+| `gp` | Open the task's PR in the browser |
 | `i` | Import an existing worktree of the repo at point |
 | `gr` | Refresh |
 | `q` | Quit the board; in the sidebar, hide the sidebar |
@@ -584,6 +585,7 @@ author), `godel-reviewer.el` (independent reviewer), `godel-ship.el`.
 | `r` / `R` | Structured review on Not Diamond / on a model you pick |
 | `w` / `W` | Walkthrough on Not Diamond / on a model you pick |
 | `P` | Ship |
+| `o` | Open the PR in the browser |
 
 ### Diff
 
@@ -777,6 +779,19 @@ so the task's state doesn't change. Default model: Not Diamond
    ...` unless a PR exists. The PR URL is saved on the task. Every command
    and its output go to `*godel-ship: <id>*`; a failure stops there and is
    shown on the board.
+4. **Tell the author.** If the author's session is running and not busy,
+   godel sends it a note: "For your information, no action needed: I
+   shipped this task… committed <hash> ("<subject>"), pushed <branch>…,
+   opened a pull request: <url>" (or "which updates the pull request"),
+   asking for a one-word reply. So if you keep working with it, it knows
+   what was shipped. (Drafting in the live session instead was considered
+   and dropped: the session must be idle, read-only can't be enforced, and
+   it can collide with what you're typing.)
+
+**Finding the PR:** the board row shows `#<number>` after the title (green,
+cyan once merged); `TAB` shows a `PR` line with the URL; `gp` on the row,
+or `o` in the review menu (`SPC G v`), opens it in the browser
+(`godel-ship-browse-pr`).
 
 **Merged:** `godel-ship-check-merged` runs `gh pr view <url> --json state`
 for tasks with a PR, when the board opens and every
@@ -784,8 +799,9 @@ for tasks with a PR, when the board opens and every
 A merged PR moves the task to **merged**. Merged tasks aren't torn down
 automatically.
 
-Not tested against GitHub yet (covered by tests with a local bare remote
-and a fake `gh`).
+Tested against GitHub: a real ship opened a PR (also covered by tests
+with a local bare remote and a fake `gh`). Merged detection not yet seen
+for real.
 
 ## Worktree lifecycle
 

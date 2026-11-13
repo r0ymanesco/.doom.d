@@ -17,7 +17,10 @@
 ;;   3. `:wq' commits (if there are changes), pushes, and opens the PR with
 ;;      `gh'.  The PR URL is saved on the task.  If the task already has a
 ;;      PR, only the commit message is drafted and the push updates the PR.
-;; Every git and gh command is logged in *godel-ship: ID*.
+;; Every git and gh command is logged in *godel-ship: ID*.  Afterwards, if
+;; the author's session is running and idle, godel tells it what was
+;; shipped (commit, PR URL), so it knows if you keep working with it.
+;; `godel-ship-browse-pr' opens a task's PR (gp on the board, o in v).
 ;;
 ;; `godel-ship-check-merged' asks gh about tasks' PRs; a merged PR moves
 ;; its task to the `merged' state.  It runs when the board opens and every
@@ -33,6 +36,7 @@
 (require 'godel-worktree)
 (require 'godel-compose)
 (require 'godel-review)
+(require 'godel-agent)
 
 (defcustom godel-ship-remote "origin"
   "Git remote that task branches are pushed to."
@@ -241,7 +245,43 @@ nil, or an error message naming the step that failed."
                               :last-event (cond (url (concat "PR opened: " url))
                                                 (open-pr "pushed; PR created (no URL printed)")
                                                 (t "pushed")))
+           (godel-ship--tell-author (godel-task-get id) (and changes commit) (and url t))
            (message "godel: %s %s" id (if url (concat "PR opened: " url) "pushed"))))))))
+
+(defun godel-ship-note (task commit hash opened)
+  "What to tell TASK's author after shipping.
+COMMIT is the commit message (nil if nothing was committed), HASH the
+pushed commit, OPENED non-nil if this ship opened the PR."
+  (let ((pr (plist-get task :pr-url)))
+    (concat "For your information, no action needed: I shipped this task from my editor. "
+            (if commit
+                (format "I committed your changes as %s (\"%s\") and pushed %s to %s"
+                        hash (car (split-string commit "\n")) (plist-get task :branch) godel-ship-remote)
+              (format "I pushed %s (at %s) to %s" (plist-get task :branch) hash godel-ship-remote))
+            (cond ((and pr opened) (format ", and opened a pull request: %s." pr))
+                  (pr (format ", which updates the pull request %s." pr))
+                  (t "."))
+            " Reply with just \"Noted.\"")))
+
+(defun godel-ship--tell-author (task commit opened)
+  "Tell TASK's author what was shipped, if its session is running and idle."
+  (when (and (godel-agent-live-p task)
+             (not (memq (plist-get task :state) '(working setting-up))))
+    (let ((hash (string-trim (or (godel-task--git (plist-get task :worktree)
+                                                  "rev-parse" "--short" "HEAD")
+                                 ""))))
+      (godel-agent-send task (godel-ship-note task commit hash opened)))))
+
+(defun godel-ship-pr-number (task)
+  "TASK's PR number as a string, or nil."
+  (when-let* ((url (plist-get task :pr-url)))
+    (and (string-match "/pull/\\([0-9]+\\)" url) (match-string 1 url))))
+
+;;;###autoload
+(defun godel-ship-browse-pr (task)
+  "Open TASK's pull request in the browser."
+  (browse-url (or (plist-get task :pr-url)
+                  (user-error "godel: %s has no PR yet (P to ship it)" (plist-get task :id)))))
 
 ;;;###autoload
 (declare-function godel-board--schedule "godel-board" (&rest _))

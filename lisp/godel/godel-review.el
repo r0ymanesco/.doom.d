@@ -811,6 +811,8 @@ C edit, x delete, s send)."
 (defun godel-review--menu-target ()
   (or (godel-task-get godel-review--menu-task) (user-error "godel: no task")))
 
+(declare-function godel-ship-browse-pr "godel-ship" (task))
+
 (transient-define-prefix godel-review-menu-prefix ()
   "Review a godel task."
   [:description (lambda () (format "Review %s" (plist-get (godel-review--menu-target) :title)))
@@ -836,7 +838,9 @@ C edit, x delete, s send)."
        (godel-reviewer-walkthrough (godel-review--menu-target) (godel-reviewer--read-model))))]
    ["Ship"
     ("P" "commit, push, open PR" (lambda () (interactive) (require 'godel-ship)
-                                  (godel-ship (godel-review--menu-target))))]])
+                                  (godel-ship (godel-review--menu-target))))
+    ("o" "open the PR in the browser" (lambda () (interactive) (require 'godel-ship)
+                                        (godel-ship-browse-pr (godel-review--menu-target))))]])
 
 (defun godel-review--ask-description ()
   (if godel-review--menu-target
