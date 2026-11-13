@@ -1342,6 +1342,13 @@ the author's (running) session what was shipped."
         (let ((inhibit-read-only t)) (godel-board--insert-task (godel-task-get id)))
         (should (string-match-p "#308" (buffer-string))))
       (with-temp-buffer
+        (godel-board-mode)
+        (setq godel-board--compact t)
+        (let ((inhibit-read-only t)) (godel-board--insert-task-compact (godel-task-get id) nil))
+        (let ((row (car (split-string (buffer-string) "\n"))))
+          (should (string-match-p "⇡" row))
+          (should (<= (string-width row) godel-sidebar-width))))
+      (with-temp-buffer
         (godel-board--details (godel-task-get id) 8)
         (should (string-match-p "PR +https://github.com/me/repo/pull/308   gp opens it" (buffer-string))))
       (godel-task-update id :pr-url nil)

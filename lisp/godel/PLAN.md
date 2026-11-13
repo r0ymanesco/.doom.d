@@ -789,9 +789,10 @@ so the task's state doesn't change. Default model: Not Diamond
    it can collide with what you're typing.)
 
 **Finding the PR:** the board row shows `#<number>` after the title (green,
-cyan once merged); `TAB` shows a `PR` line with the URL; `gp` on the row,
-or `o` in the review menu (`SPC G v`), opens it in the browser
-(`godel-ship-browse-pr`).
+cyan once merged), the sidebar row a `⇡` in the same colours (next to the
+review badge, two columns taken from the title); `TAB` shows a `PR` line
+with the URL; `gp` on a board or sidebar row, or `o` in the review menu
+(`SPC G v`), opens it in the browser (`godel-ship-browse-pr`).
 
 **Merged:** `godel-ship-check-merged` runs `gh pr view <url> --json state`
 for tasks with a PR, when the board opens and every

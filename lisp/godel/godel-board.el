@@ -219,6 +219,10 @@ board) removes plain `face' properties when it fontifies."
   (when (fboundp '+workspace-current-name)
     (plist-get (godel-task-by-slug (ignore-errors (+workspace-current-name))) :id)))
 
+(defun godel-board--pr-face (task)
+  "Face for TASK's PR marker: green while open, cyan once merged."
+  (godel-board--state-face (if (eq (plist-get task :state) 'merged) 'merged 'needs-review)))
+
 (defun godel-board--icon (task)
   (let ((state (plist-get task :state)))
     (godel-board--paint (alist-get state godel-board-icons "?") (godel-board--state-face state))))
@@ -295,10 +299,7 @@ findings, or a failed one: until the review list has been opened."
                 (godel-board--paint (truncate-string-to-width (plist-get task :title) 32 nil nil "…")
                             'magit-section-secondary-heading)
                 (if-let* ((n (and (fboundp 'godel-ship-pr-number) (godel-ship-pr-number task))))
-                    (godel-board--paint (concat "#" n)
-                                        (if (eq (plist-get task :state) 'merged)
-                                            (godel-board--state-face 'merged)
-                                          (godel-board--state-face 'needs-review)))
+                    (godel-board--paint (concat "#" n) (godel-board--pr-face task))
                   "")
                 (truncate-string-to-width (godel-board--model-label task) 14 nil nil "…")
                 (godel-board--paint (truncate-string-to-width (or (plist-get task :last-event) "") 50 nil nil "…")
@@ -319,10 +320,12 @@ findings, or a failed one: until the review list has been opened."
          (state (plist-get task :state))
          (age (godel-board--age (or (plist-get task :updated) (plist-get task :created))))
          (badge (godel-board--review-badge task))
+         (pr (and (fboundp 'godel-ship-pr-number) (godel-ship-pr-number task)))
          ;; Marker, icon and spaces take 4 columns, the age plus a space
-         ;; more, a review badge 2, and magit adds "…" after a collapsed row;
-         ;; keep a margin.
-         (title-width (max 8 (- godel-sidebar-width 4 (length age) 1 3 (if badge 2 0))))
+         ;; more, a review badge 2, a PR icon 2, and magit adds "…" after a
+         ;; collapsed row; keep a margin.
+         (title-width (max 8 (- godel-sidebar-width 4 (length age) 1 3
+                                (if badge 2 0) (if pr 2 0))))
          (attention (memq state '(needs-attention model-mismatch))))
     (magit-insert-section (godel-task id (not (member id godel-board--expanded)))
       (magit-insert-heading
@@ -332,6 +335,7 @@ findings, or a failed one: until the review list has been opened."
                             (if (equal id current) 'magit-section-highlight
                                     'magit-section-secondary-heading))
                 (if badge (concat " " (godel-board--paint (car badge) (nth 2 badge))) "")
+                (if pr (concat " " (godel-board--paint "⇡" (godel-board--pr-face task))) "")
                 " " (godel-board--paint age 'godel-board-dim)
                 (when attention
                   (concat "\n    "
