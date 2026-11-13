@@ -149,6 +149,7 @@ If there is nothing after it, the title is also the prompt."
                (task (apply #'godel-task-create
                             :title title :repo repo
                             :session-id (godel-new--uuid)
+                            :prompt prompt
                             :pending-prompt prompt
                             :last-event "creating the worktree"
                             args))

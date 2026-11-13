@@ -508,12 +508,14 @@ ON-SENT, if non-nil, is called once the text has been sent."
   "RET" #'godel-review-list-visit
   "C" #'godel-review-list-edit
   "x" #'godel-review-list-delete
+  "a" #'godel-review-list-accept
   "s" #'godel-review-list-send
   "g r" #'godel-review-list-refresh
   "q" #'quit-window)
 
 (define-derived-mode godel-review-mode magit-section-mode "godel-review"
-  "A task's review comments: RET visit, C edit, x delete, s send."
+  "A task's review: findings (a accept, x drop) and comments (RET visit,
+C edit, x delete, s send)."
   (setq truncate-lines t)
   (when (boundp '+indent-guides-inhibit-functions)
     (add-hook '+indent-guides-inhibit-functions
@@ -524,6 +526,7 @@ ON-SENT, if non-nil, is called once the text has been sent."
     (kbd "RET") #'godel-review-list-visit
     "C" #'godel-review-list-edit
     "x" #'godel-review-list-delete
+    "a" #'godel-review-list-accept
     "s" #'godel-review-list-send
     "gr" #'godel-review-list-refresh
     "q" #'quit-window))
@@ -542,6 +545,27 @@ ON-SENT, if non-nil, is called once the text has been sent."
       (dolist (line (split-string (plist-get c :text) "\n"))
         (insert "      " line "\n")))))
 
+(declare-function godel-reviewer-accept "godel-reviewer" (id finding-id))
+(declare-function godel-reviewer-drop "godel-reviewer" (id finding-id))
+(declare-function godel-reviewer-run "godel-reviewer" (task &optional model))
+(declare-function godel-reviewer-walkthrough "godel-reviewer" (task &optional model))
+(declare-function godel-reviewer--read-model "godel-reviewer" ())
+
+(defun godel-review--insert-finding (task f)
+  (let* ((s (plist-get f :start)) (e (plist-get f :end))
+         (where (format "%s:%s" (plist-get f :file) (if (= s e) s (format "%d-%d" s e)))))
+    (magit-insert-section (godel-finding (plist-get f :id))
+      (magit-insert-heading
+        (concat "  " (propertize (format "%-6s" (plist-get f :severity))
+                                 'font-lock-face (pcase (plist-get f :severity)
+                                                   ("high" 'error) ("medium" 'warning) (_ 'shadow)))
+                " " (propertize where 'font-lock-face 'magit-filename)
+                "  " (car (split-string (or (plist-get f :text) "") "\n"))))
+      (dolist (line (split-string (or (godel-review--file-lines task (plist-get f :file) s e) "") "\n"))
+        (insert (propertize (concat "      | " line "\n") 'font-lock-face 'shadow)))
+      (dolist (line (split-string (or (plist-get f :text) "") "\n"))
+        (insert "      " line "\n")))))
+
 (defun godel-review-list-refresh ()
   "Redraw this review list."
   (interactive)
@@ -554,9 +578,20 @@ ON-SENT, if non-nil, is called once the text has been sent."
     (magit-insert-section (godel-review-root)
       (insert (propertize (format "Review of %s" (plist-get task :title))
                           'font-lock-face 'magit-section-heading)
-              (propertize "    RET visit · C edit · x delete · s send pending\n\n"
+              (propertize "    RET visit · C edit · x delete/drop · a accept · s send pending\n\n"
                           'font-lock-face 'shadow))
-      (unless (plist-get task :comments)
+      (when-let* ((note (plist-get task :review-note)))
+        (insert (propertize (format "  Independent review: %s\n\n" note)
+                            'font-lock-face (if (eq (plist-get task :review-status) 'failed)
+                                                'error 'shadow))))
+      (when-let* ((proposed (cl-remove-if-not (lambda (f) (eq (plist-get f :state) 'proposed))
+                                              (plist-get task :findings))))
+        (magit-insert-section (godel-finding-group 'proposed)
+          (magit-insert-heading
+            (format "Reviewer findings (%d)    a accept as a comment · x drop" (length proposed)))
+          (dolist (f proposed) (godel-review--insert-finding task f))
+          (insert "\n")))
+      (unless (or (plist-get task :comments) (plist-get task :findings))
         (insert "  No comments yet.  C in the task's diff (d) adds one.\n"))
       (pcase-dolist (`(,label ,state) godel-review--list-groups)
         (when-let* ((cs (godel-review-comments task (list state))))
@@ -602,12 +637,22 @@ ON-SENT, if non-nil, is called once the text has been sent."
                    (lambda (text) (godel-review-update-comment id (plist-get c :id) :text text))
                    (plist-get c :text))))
 
-(defun godel-review-list-delete ()
-  "Delete the comment at point."
+(defun godel-review-list-accept ()
+  "Accept the reviewer finding at point: it becomes a pending comment."
   (interactive)
+  (let ((fid (or (magit-section-value-if 'godel-finding) (user-error "godel: no finding here"))))
+    (require 'godel-reviewer)
+    (godel-reviewer-accept godel-review--list-task fid)))
+
+(defun godel-review-list-delete ()
+  "Delete the comment at point, or drop the reviewer finding at point."
+  (interactive)
+  (if-let* ((fid (magit-section-value-if 'godel-finding)))
+      (progn (require 'godel-reviewer)
+             (godel-reviewer-drop godel-review--list-task fid))
   (let ((c (godel-review--list-comment)))
     (when (y-or-n-p (format "Delete the comment on %s:%s? " (plist-get c :file) (plist-get c :start)))
-      (godel-review-delete-comment godel-review--list-task (plist-get c :id)))))
+      (godel-review-delete-comment godel-review--list-task (plist-get c :id))))))
 
 (defun godel-review-list-send ()
   "Send the pending comments (after editing them as one message)."
@@ -693,7 +738,19 @@ ON-SENT, if non-nil, is called once the text has been sent."
    ["Talk to the author"
     ("s" "send pending comments" (lambda () (interactive) (godel-review-send (godel-review--menu-target))))
     ("a" (lambda () (interactive) (godel-review-ask (godel-review--menu-target) godel-review--menu-target))
-     :description godel-review--ask-description)]])
+     :description godel-review--ask-description)]
+   ["Independent review"
+    ("r" "review (Not Diamond)"
+     (lambda () (interactive) (require 'godel-reviewer) (godel-reviewer-run (godel-review--menu-target))))
+    ("R" "review on a model..."
+     (lambda () (interactive) (require 'godel-reviewer)
+       (godel-reviewer-run (godel-review--menu-target) (godel-reviewer--read-model))))
+    ("w" "walkthrough (Not Diamond)"
+     (lambda () (interactive) (require 'godel-reviewer)
+       (godel-reviewer-walkthrough (godel-review--menu-target))))
+    ("W" "walkthrough on a model..."
+     (lambda () (interactive) (require 'godel-reviewer)
+       (godel-reviewer-walkthrough (godel-review--menu-target) (godel-reviewer--read-model))))]])
 
 (defun godel-review--ask-description ()
   (if godel-review--menu-target

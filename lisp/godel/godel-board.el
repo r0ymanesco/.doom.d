@@ -216,6 +216,7 @@ board) removes plain `face' properties when it fontifies."
                                          (format "  (running %s)" a) "")))
                    ("changes" ,(plist-get task :diffstat))
                    ("comments" ,(godel-board--comment-summary task))
+                   ("review" ,(plist-get task :review-note))
                    ("last message" ,(plist-get task :last-message))
                    ("session" ,(if (godel-agent-live-p task) "running" "not running"))))
       (when (cadr row)

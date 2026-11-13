@@ -1030,6 +1030,112 @@ instance-name prompt bug): it waits for the first and gets its buffer."
       ;; Asking doesn't touch the comments.
       (should-not (plist-get (godel-task-get id) :comments)))))
 
+(defconst godel-test-reviewer-output
+  (concat "Reusing running notdiamond proxy (pid 1) at http://127.0.0.1:8082\n"
+          "Launching Claude Code from /x/claude...\n"
+          (json-encode
+           `((type . "result") (subtype . "success") (is_error . :json-false)
+             (result . ,(concat "Two problems.\n<findings>"
+                                (json-encode
+                                 [((file . "app.py") (line . 5) (end_line . 5) (severity . "high")
+                                   (comment . "20 contradicts the spec; return 2."))
+                                  ((file . "new.txt") (line . 1) (severity . "low")
+                                   (comment . "Unused file."))])
+                                "</findings>"))))
+          "\n"))
+
+(ert-deftest godel-test-reviewer-parse ()
+  (let ((findings (godel-reviewer-parse godel-test-reviewer-output)))
+    (should (= (length findings) 2))
+    (should (equal (car findings) '(:file "app.py" :start 5 :end 5 :severity "high"
+                                    :text "20 contradicts the spec; return 2.")))
+    ;; end_line missing: same as line.
+    (should (= (plist-get (cadr findings) :end) 1)))
+  (should (null (godel-reviewer-parse
+                 "{\"type\":\"result\",\"is_error\":false,\"result\":\"Fine.<findings>[]</findings>\"}")))
+  (should-error (godel-reviewer-parse "{\"type\":\"result\",\"is_error\":true,\"result\":\"overloaded\"}"))
+  (should-error (godel-reviewer-parse "{\"type\":\"result\",\"is_error\":false,\"result\":\"no block\"}"))
+  (should-error (godel-reviewer-parse "nothing here")))
+
+(ert-deftest godel-test-reviewer-prompt-has-task-and-diff ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp)))
+      (godel-task-update (plist-get task :id) :prompt "Change b() to return 20 and add c().")
+      (let ((prompt (godel-reviewer-prompt (godel-task-get (plist-get task :id)))))
+        (should (string-match-p "Change b() to return 20" prompt))
+        (should (string-match-p "^\\+    return 20" prompt))
+        ;; Untracked files are in the diff too.
+        (should (string-match-p "^\\+brand new" prompt))
+        (should (string-match-p "<findings>" prompt))))))
+
+(ert-deftest godel-test-reviewer-run ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (process-environment (cons "GODEL_SERVER=/should/not/leak" process-environment))
+           ran)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-models--run)
+                 (lambda (program args callback &optional input env)
+                   (setq ran (list :program program :args args :input input :env env))
+                   (funcall callback 0 godel-test-reviewer-output))))
+        (godel-reviewer-run (godel-task-get id)))
+      ;; Read-only, headless, no session saved, no pins for Not Diamond, no godel hooks.
+      (should (member "--no-session-persistence" (plist-get ran :args)))
+      (should (member "Edit,Write,MultiEdit,NotebookEdit,Bash" (plist-get ran :args)))
+      (should-not (member "--settings" (plist-get ran :args)))
+      (should-not (member "--effort" (plist-get ran :args)))
+      ;; Pin variables and GODEL_SERVER only appear as bare names (= unset).
+      (should-not (cl-some (lambda (e) (string-match-p "\\`\\(NOTDIAMOND_\\|GODEL_SERVER=\\)[^=]*=" e))
+                           (plist-get ran :env)))
+      (should (equal (car (plist-get ran :env)) "GODEL_SERVER"))
+      (should (string-match-p "return 20" (plist-get ran :input)))
+      (let ((task (godel-task-get id)))
+        (should (eq (plist-get task :review-status) 'done))
+        (should (equal (plist-get task :review-note) "2 findings"))
+        (should (equal (mapcar (lambda (f) (plist-get f :state)) (plist-get task :findings))
+                       '(proposed proposed)))
+        ;; The task's own state is untouched.
+        (should (eq (plist-get task :state) 'setting-up)))
+      ;; Accept one, drop the other.
+      (godel-reviewer-accept id 1)
+      (godel-reviewer-drop id 2)
+      (let ((task (godel-task-get id)))
+        (should (equal (mapcar (lambda (f) (plist-get f :state)) (plist-get task :findings))
+                       '(accepted dropped)))
+        (should (equal (plist-get (car (plist-get task :comments)) :text)
+                       "[reviewer, high] 20 contradicts the spec; return 2."))
+        (should (eq (plist-get (car (plist-get task :comments)) :state) 'pending)))
+      ;; A failed run is recorded, not raised.
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _) (funcall callback 1 "boom"))))
+        (godel-reviewer-run (godel-task-get id)))
+      (should (eq (plist-get (godel-task-get id) :review-status) 'failed)))))
+
+(ert-deftest godel-test-review-list-findings ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id)))
+      (add-hook 'godel-event-functions #'godel-review--refresh-lists)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _) (funcall callback 0 godel-test-reviewer-output))))
+        (godel-reviewer-run (godel-task-get id)))
+      (save-window-excursion
+        (godel-review-list (godel-task-get id))
+        (unwind-protect
+            (progn
+              (should (godel-test-text-order-p "Independent review: 2 findings"
+                                               "Reviewer findings (2)" "high" "app.py:5"
+                                               "low" "new.txt:1"))
+              (goto-char (point-min))
+              (search-forward "app.py:5")
+              (godel-review-list-accept)
+              (should (godel-test-text-order-p "Reviewer findings (1)" "Pending (1)"
+                                               "[reviewer, high]")))
+          (kill-buffer (godel-review--list-buffer-name id)))))))
+
 (ert-deftest godel-test-review-history ()
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp)))
