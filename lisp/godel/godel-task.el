@@ -36,7 +36,7 @@ Each is called with two arguments: the task plist after the change and
 a symbol naming the change (`created', `updated' or `deleted').")
 
 (defconst godel-task-states
-  '(setting-up needs-attention model-mismatch working needs-review idle stopped)
+  '(setting-up needs-attention model-mismatch working needs-review idle stopped merged)
   "Known task states, in board order.")
 
 (defvar godel-task--tasks (make-hash-table :test #'equal)

@@ -30,6 +30,7 @@
 (require 'godel-api)
 (require 'godel-review)
 (require 'godel-reviewer)
+(require 'godel-ship)
 
 (declare-function notifications-notify "notifications" (&rest params))
 (defvar claude-code-ide-buffer-name-function)
@@ -137,8 +138,10 @@ for them can't arrive.  Reviewable states are kept."
           (add-to-list 'persp-activated-functions #'godel-sidebar-sync 'append)
           (add-to-list 'persp-activated-functions #'godel-board-on-workspace-activated 'append))
         (add-to-list 'global-mode-string 'godel-mode-line t)
+        (godel-ship-start-checking)
         (godel-models-refresh-if-stale))
     (remove-hook 'godel-event-functions #'godel--notify)
+    (godel-ship-stop-checking)
     (when (boundp 'persp-activated-functions)
       (setq persp-activated-functions
             (delq #'godel-board-on-workspace-activated

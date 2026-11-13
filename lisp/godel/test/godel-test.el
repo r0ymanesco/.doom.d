@@ -1136,6 +1136,110 @@ instance-name prompt bug): it waits for the first and gets its buffer."
                                                "[reviewer, high]")))
           (kill-buffer (godel-review--list-buffer-name id)))))))
 
+(ert-deftest godel-test-ship-draft-parse-and-split ()
+  (let ((out (concat "wrapper line\n"
+                     (json-encode '((type . "result") (is_error . :json-false)
+                                    (result . "<commit>Add greet\n\nReturns a greeting.</commit>\n<pr-title>Add greet()</pr-title>\n<pr-body>Adds `greet`.</pr-body>")))
+                     "\n")))
+    (should (equal (godel-ship-parse-draft out)
+                   '("Add greet\n\nReturns a greeting." "Add greet()" "Adds `greet`.")))
+    (should-error (godel-ship-parse-draft "{\"type\":\"result\",\"is_error\":true,\"result\":\"no\"}")))
+  (let ((text (godel-ship-draft-text '("Subject\n\nBody" "PR title" "PR body\nmore") nil)))
+    (should (equal (godel-ship-split text) '("Subject\n\nBody" "PR title" "PR body\nmore"))))
+  (let ((text (godel-ship-draft-text '("Fix typo" nil nil) "https://x/pr/1")))
+    (should-not (string-match-p "Pull request" text))
+    (should (equal (godel-ship-split text) '("Fix typo" nil nil)))))
+
+(ert-deftest godel-test-ship-draft-forks-author-session ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           ran)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-models--run)
+                 (lambda (_program args callback &optional input env)
+                   (setq ran (list :args args :input input :env env))
+                   (funcall callback 0 "{\"type\":\"result\",\"is_error\":false,\"result\":\"<commit>c</commit>\"}"))))
+        (godel-task-update id :session-id "sid-s" :transcript "/tmp/t.jsonl")
+        (godel-ship-draft (godel-task-get id) #'ignore)
+        (should (equal (cadr (member "--resume" (plist-get ran :args))) "sid-s"))
+        (should (member "--fork-session" (plist-get ran :args)))
+        (should (member "--no-session-persistence" (plist-get ran :args)))
+        (should (equal (car (plist-get ran :env)) "GODEL_SERVER"))
+        (godel-task-update id :transcript nil)
+        (godel-ship-draft (godel-task-get id) #'ignore)
+        (should-not (member "--resume" (plist-get ran :args)))
+        (should (string-match-p "return 20" (plist-get ran :input)))))))
+
+(defun godel-test-fake-gh (dir url state)
+  "A fake gh in DIR: pr create prints URL and logs its args; pr view prints STATE."
+  (let ((gh (expand-file-name "gh" dir)) (log (expand-file-name "gh.log" dir)))
+    (with-temp-file gh
+      (insert "#!/bin/sh\n"
+              "printf '%s\\n' \"$*\" >> " (shell-quote-argument log) "\n"
+              "case \"$1 $2\" in\n"
+              "  'pr create') echo " (shell-quote-argument url) " ;;\n"
+              "  'pr view') echo '{\"state\":\"" state "\"}' ;;\n"
+              "esac\n"))
+    (set-file-modes gh #o755)
+    (cons gh log)))
+
+(ert-deftest godel-test-ship-execute ()
+  "Commit, push to a real (local) remote, and open the PR with gh."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (remote (expand-file-name "remote.git" tmp))
+           (fake (godel-test-fake-gh tmp "https://github.com/me/repo/pull/7" "OPEN"))
+           (godel-gh-program (car fake))
+           (done (lambda () (string-match-p "\\`\\(pushed\\|PR opened\\|.*failed\\)"
+                                            (or (plist-get (godel-task-get id) :last-event) "")))))
+      (call-process "git" nil nil nil "init" "-q" "--bare" remote)
+      (let ((default-directory (plist-get task :repo)))
+        (call-process "git" nil nil nil "remote" "add" "origin" remote)
+        (call-process "git" nil nil nil "push" "-q" "origin" "main"))
+      (let ((default-directory (plist-get task :worktree)))
+        (call-process "git" nil nil nil "config" "user.email" "t@t")
+        (call-process "git" nil nil nil "config" "user.name" "t"))
+      (godel-ship-execute (godel-task-get id) "Change b and add c\n\nDetails." "Change b" "PR body")
+      (should (godel-test-wait done 20))
+      (should (equal (plist-get (godel-task-get id) :pr-url) "https://github.com/me/repo/pull/7"))
+      (should (equal (plist-get (godel-task-get id) :last-event)
+                     "PR opened: https://github.com/me/repo/pull/7"))
+      (should (equal (godel-task--git (plist-get task :worktree) "log" "-1" "--format=%s") "Change b and add c"))
+      (should (equal (godel-task--git (plist-get task :worktree) "status" "--porcelain") ""))
+      (should (equal (godel-task--git remote "rev-parse" (plist-get task :branch))
+                     (godel-task--git (plist-get task :worktree) "rev-parse" "HEAD")))
+      (with-temp-buffer
+        (insert-file-contents (cdr fake))
+        (should (string-match-p (format "pr create --base main --head %s --title Change b --body-file "
+                                        (regexp-quote (plist-get task :branch)))
+                                (buffer-string))))
+      (delete-file (cdr fake))
+      (with-temp-file (expand-file-name "more.txt" (plist-get task :worktree)) (insert "more\n"))
+      (godel-task-update id :last-event "")
+      (godel-ship-execute (godel-task-get id) "More" nil nil)
+      (should (godel-test-wait done 20))
+      (should (equal (plist-get (godel-task-get id) :last-event) "pushed"))
+      (should-not (file-exists-p (cdr fake)))
+      (should (equal (godel-task--git remote "rev-parse" (plist-get task :branch))
+                     (godel-task--git (plist-get task :worktree) "rev-parse" "HEAD")))
+      (with-temp-file (expand-file-name "x.txt" (plist-get task :worktree)) (insert "x\n"))
+      (should-error (godel-ship-execute (godel-task-get id) nil nil nil) :type 'user-error))))
+
+(ert-deftest godel-test-ship-check-merged ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (godel-gh-program (car (godel-test-fake-gh tmp "unused" "MERGED"))))
+      (godel-task-update id :pr-url "https://github.com/me/repo/pull/7" :state 'needs-review)
+      (godel-ship-check-merged)
+      (should (godel-test-wait (lambda () (eq (plist-get (godel-task-get id) :state) 'merged)) 5))
+      (should (equal (plist-get (godel-task-get id) :last-event) "PR merged"))
+      (with-current-buffer (godel-board-buffer)
+        (unwind-protect (should (godel-test-text-order-p "Merged (1)" "rev"))
+          (kill-buffer))))))
+
 (ert-deftest godel-test-review-history ()
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp)))

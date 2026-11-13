@@ -11,7 +11,7 @@
 ;;   TAB  show details                  m  message the agent
 ;;   R    restart/resume (new model?)   x  tear down (keeps the branch)
 ;;   d    diff with comments (C)        v  review menu
-;;   gr   refresh
+;;   P    commit, push, open a PR       gr refresh
 ;;   q    quit (hides the sidebar)
 
 ;;; Code:
@@ -27,6 +27,8 @@
 (declare-function godel-new-task "godel-new" (&optional repo))
 (declare-function godel-review-diff "godel-review" (task))
 (declare-function godel-review-menu "godel-review" (&optional task))
+(declare-function godel-ship "godel-ship" (task))
+(declare-function godel-ship-check-merged "godel-ship" ())
 (declare-function godel-new--read-model "godel-new" (prompt initial history))
 (declare-function magit-status-setup-buffer "magit-status" (&optional directory))
 (declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide" (buffer))
@@ -54,12 +56,13 @@
     ("Setting up" setting-up)
     ("Needs review" needs-review)
     ("Idle" idle)
-    ("Stopped" stopped))
+    ("Stopped" stopped)
+    ("Merged" merged))
   "Board groups in display order: (LABEL STATE...).")
 
 (defconst godel-board-icons
   '((needs-attention . "●") (model-mismatch . "✗") (working . "◐")
-    (setting-up . "…") (needs-review . "✓") (idle . "○") (stopped . "■")))
+    (setting-up . "…") (needs-review . "✓") (idle . "○") (stopped . "■") (merged . "◆")))
 
 ;; One face per state.  The colour is the foreground of the theme's ANSI
 ;; colour for that state (Doom themes map these to their palette), looked up
@@ -81,11 +84,13 @@
   "Idle tasks (the normal text colour)." :group 'godel)
 (defface godel-state-stopped '((t :inherit shadow))
   "Tasks whose session has ended (grey)." :group 'godel)
+(defface godel-state-merged '((t))
+  "Tasks whose PR has been merged (cyan)." :group 'godel)
 (defface godel-board-dim '((t :inherit shadow)) "Secondary text." :group 'godel)
 
 (defconst godel-board--state-colours
   '((needs-attention . red) (model-mismatch . magenta) (working . yellow)
-    (setting-up . blue) (needs-review . green))
+    (setting-up . blue) (needs-review . green) (merged . cyan))
   "ANSI colour for each state; states not listed use their face only.")
 
 (defun godel-board--state-face (state)
@@ -129,6 +134,7 @@ board) removes plain `face' properties when it fontifies."
   "x" #'godel-board-teardown
   "d" #'godel-board-diff
   "v" #'godel-board-review
+  "P" #'godel-board-ship
   "g r" #'godel-board-refresh
   "q" #'godel-board-quit)
 
@@ -154,6 +160,7 @@ board) removes plain `face' properties when it fontifies."
     "x" #'godel-board-teardown
     "d" #'godel-board-diff
     "v" #'godel-board-review
+    "P" #'godel-board-ship
     "gr" #'godel-board-refresh
     "q" #'godel-board-quit))
 
@@ -183,7 +190,8 @@ board) removes plain `face' properties when it fontifies."
     ("◐" godel-state-working working setting-up)
     ("✓" godel-state-needs-review needs-review)
     ("○" godel-state-idle idle)
-    ("■" godel-state-stopped stopped)))
+    ("■" godel-state-stopped stopped)
+    ("◆" godel-state-merged merged)))
 
 (defun godel-board--counts (tasks)
   "Counts per state for TASKS, like \"●1 ◐2 ✓1\"."
@@ -410,6 +418,7 @@ board) removes plain `face' properties when it fontifies."
 The workspace is created on first use; afterwards this switches back to
 it.  Without Doom workspaces, the board opens in the selected window."
   (interactive)
+  (when (fboundp 'godel-ship-check-merged) (godel-ship-check-merged))
   (let ((buffer (godel-board-buffer)))
     (if (not (fboundp '+workspace-switch))
         (switch-to-buffer buffer)
@@ -508,6 +517,12 @@ workspace."
   (interactive)
   (require 'godel-review)
   (godel-review-menu (godel-board--task)))
+
+(defun godel-board-ship ()
+  "Commit, push and open a PR for the task at point (author-drafted)."
+  (interactive)
+  (require 'godel-ship)
+  (godel-ship (godel-board--task)))
 
 (defun godel-board-message ()
   "Send a message to the task's agent."
