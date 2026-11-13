@@ -429,10 +429,44 @@ it.  Without Doom workspaces, the board opens in the selected window."
     (if (file-directory-p (plist-get task :worktree))
         (magit-status-setup-buffer (plist-get task :worktree))
       (dired (plist-get task :repo)))
-    (if (and buffer (fboundp 'claude-code-ide--display-buffer-in-side-window))
-        (select-window (claude-code-ide--display-buffer-in-side-window buffer))
-      (message "godel: no running session; R on the board restarts it"))
+    (cond (buffer (godel-board--display-session buffer t))
+          ((godel-agent-resumable-p task)
+           (message "godel: resuming %s's Claude session" (plist-get task :id))
+           (godel-board--show-session task t))
+          (t (message "godel: no session to resume; R on the board starts one")))
     (when (fboundp 'godel-sidebar-sync) (godel-sidebar-sync))))
+
+(defun godel-board--display-session (buffer select)
+  "Show the session BUFFER on the right; with SELECT, select its window."
+  (when (fboundp 'claude-code-ide--display-buffer-in-side-window)
+    (let ((window (or (get-buffer-window buffer)
+                      (claude-code-ide--display-buffer-in-side-window buffer))))
+      (when (and select window) (select-window window))
+      window)))
+
+(defun godel-board--in-workspace-p (task)
+  "Non-nil if TASK's workspace is current (or there are no workspaces)."
+  (or (not (fboundp '+workspace-current-name))
+      (equal (ignore-errors (+workspace-current-name)) (plist-get task :slug))))
+
+(defun godel-board--show-session (task &optional select)
+  "Resume TASK's session if needed and show it, if you're still in its workspace."
+  (godel-agent-ensure-session
+   task (lambda (buffer)
+          (when (and buffer (godel-board--in-workspace-p task))
+            (godel-board--display-session buffer select)))))
+
+(defun godel-board-on-workspace-activated (&rest _)
+  "After a workspace switch: resume the task's session if it isn't running.
+Sessions end with Emacs, so this brings a task back however you reach its
+workspace."
+  (run-with-timer
+   0 nil
+   (lambda ()
+     (when-let* ((task (and (fboundp '+workspace-current-name)
+                            (godel-task-by-slug (ignore-errors (+workspace-current-name))))))
+       (when (godel-agent-resumable-p task)
+         (godel-board--show-session task))))))
 
 (defun godel-board-message ()
   "Send a message to the task's agent."

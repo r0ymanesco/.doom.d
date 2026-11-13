@@ -74,8 +74,10 @@ hook must not disturb the session."
                      :transcript (alist-get 'transcript_path data)
                      :model-actual (or model "unreported")
                      :model-check-pending (and expect (null model))
-                     :state (if ok (if (plist-get task :pending-prompt) 'setting-up 'idle)
-                              'model-mismatch)
+                     :state (cond ((not ok) 'model-mismatch)
+                                  ((plist-get task :pending-prompt) 'setting-up)
+                                  (t (or (plist-get task :resume-state) 'idle)))
+                     :resume-state nil
                      :last-event (cond ((not ok) (format "started on %s, expected %s" model expect))
                                        (model (format "session started on %s" model))
                                        (t "session resumed; checking its model"))))

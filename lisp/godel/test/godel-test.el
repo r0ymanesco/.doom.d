@@ -629,6 +629,89 @@ The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
         (should (eq (if (consp f1) (car f1) f1) 'godel-state-needs-attention))
         (should (eq (if (consp f2) (car f2) f2) 'godel-state-working))))))
 
+(defun godel-test-started-task (tmp state)
+  "A task in TMP whose session has started before, now in STATE."
+  (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
+         (task (godel-task-create :title "r" :repo repo :base "main" :model "notdiamond[1m]"
+                                  :session-id "sid-r")))
+    (make-directory (plist-get task :worktree) t)
+    (godel-task-update (plist-get task :id) :state state
+                       :transcript (expand-file-name "t.jsonl" tmp))))
+
+(ert-deftest godel-test-resumable ()
+  (godel-test-with-env
+    (let ((task (godel-test-started-task tmp 'needs-review)))
+      (should (godel-agent-resumable-p task))
+      (should-not (godel-agent-resumable-p (plist-put (copy-sequence task) :state 'model-mismatch)))
+      (should-not (godel-agent-resumable-p (plist-put (copy-sequence task) :state 'setting-up)))
+      (should-not (godel-agent-resumable-p (plist-put (copy-sequence task) :transcript nil)))
+      (cl-letf (((symbol-function 'godel-agent-live-p) (lambda (_) t)))
+        (should-not (godel-agent-resumable-p task))))))
+
+(ert-deftest godel-test-ensure-session ()
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'idle))
+           (fake (generate-new-buffer " fake-session"))
+           (started nil) (got 'pending))
+      (unwind-protect
+          (cl-letf (((symbol-function 'godel-agent-start)
+                     (lambda (task resume on-launch)
+                       (setq started (list (plist-get task :id) resume))
+                       (funcall on-launch fake)))
+                    ((symbol-function 'godel-agent-buffer) (lambda (_) fake)))
+            ;; Resumable: resumes, and calls back with the buffer after launch.
+            (godel-agent-ensure-session task (lambda (b) (setq got b)))
+            (should (equal started (list (plist-get task :id) t)))
+            (should (eq got fake))
+            ;; Running: straight away, no new start.
+            (setq started nil got 'pending)
+            (cl-letf (((symbol-function 'godel-agent-live-p) (lambda (_) t)))
+              (godel-agent-ensure-session task (lambda (b) (setq got b))))
+            (should (eq got fake))
+            (should-not started)
+            ;; Not resumable (wrong model): nil, no start.
+            (setq got 'pending)
+            (godel-agent-ensure-session (plist-put (copy-sequence task) :state 'model-mismatch)
+                                        (lambda (b) (setq got b)))
+            (should (null got))
+            (should-not started))
+        (kill-buffer fake)))))
+
+(ert-deftest godel-test-start-calls-on-launch-after-launch ()
+  "ON-LAUNCH runs after the launch returns, not during it."
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'idle))
+           (order nil))
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-agent--launch) (lambda (&rest _) (push 'launch order)))
+                ((symbol-function 'godel-agent-buffer) (lambda (_) 'buf)))
+        (godel-agent-start task t (lambda (b) (push (list 'on-launch b) order))))
+      (should (equal (reverse order) '(launch (on-launch buf))))
+      ;; A failed proxy check calls back with nil.
+      (setq order nil)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb nil "no proxy"))))
+        (godel-agent-start (godel-task-get (plist-get task :id)) t (lambda (b) (push (list 'on-launch b) order))))
+      (should (equal order '((on-launch nil)))))))
+
+(ert-deftest godel-test-resume-keeps-state ()
+  "A task that was ready for review is still ready for review after resuming."
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'needs-review))
+           (id (plist-get task :id)))
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) #'ignore))
+        (godel-agent-start task t))
+      (should (eq (plist-get (godel-task-get id) :state) 'setting-up))
+      (should (eq (plist-get (godel-task-get id) :resume-state) 'needs-review))
+      (godel-status-event "SessionStart" (godel-test-payload '((session_id . "sid-r") (source . "resume"))))
+      (should (eq (plist-get (godel-task-get id) :state) 'needs-review))
+      (should-not (plist-get (godel-task-get id) :resume-state))
+      ;; A stopped task comes back idle.
+      (godel-task-update id :state 'stopped)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) #'ignore))
+        (godel-agent-start (godel-task-get id) t))
+      (godel-status-event "SessionStart" (godel-test-payload '((session_id . "sid-r"))))
+      (should (eq (plist-get (godel-task-get id) :state) 'idle)))))
+
 (ert-deftest godel-test-reconcile-marks-dead-sessions-stopped ()
   (godel-test-with-env
     (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))

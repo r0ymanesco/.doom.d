@@ -108,7 +108,7 @@ for them can't arrive.  Reviewable states are kept."
     (when (and (memq (plist-get task :state) '(working needs-attention setting-up))
                (not (godel-agent-live-p task)))
       (godel-task-update (plist-get task :id) :state 'stopped
-                         :last-event "session ended (Emacs restarted?); R to resume"))))
+                         :last-event "session ended (Emacs restarted?); opening the task resumes it"))))
 
 ;;;###autoload
 (define-minor-mode godel-mode
@@ -132,12 +132,15 @@ for them can't arrive.  Reviewable states are kept."
         (add-hook 'godel-event-functions #'godel--notify)
         ;; Doom's workspace hook isn't a normal hook; config.el uses add-to-list too.
         (when (boundp 'persp-activated-functions)
-          (add-to-list 'persp-activated-functions #'godel-sidebar-sync 'append))
+          (add-to-list 'persp-activated-functions #'godel-sidebar-sync 'append)
+          (add-to-list 'persp-activated-functions #'godel-board-on-workspace-activated 'append))
         (add-to-list 'global-mode-string 'godel-mode-line t)
         (godel-models-refresh-if-stale))
     (remove-hook 'godel-event-functions #'godel--notify)
     (when (boundp 'persp-activated-functions)
-      (setq persp-activated-functions (delq #'godel-sidebar-sync persp-activated-functions)))
+      (setq persp-activated-functions
+            (delq #'godel-board-on-workspace-activated
+                  (delq #'godel-sidebar-sync persp-activated-functions))))
     (setq global-mode-string (delq 'godel-mode-line global-mode-string))
     (when godel--saved-buffer-name-function
       (setq claude-code-ide-buffer-name-function godel--saved-buffer-name-function))))

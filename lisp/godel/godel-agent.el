@@ -113,27 +113,40 @@ With RESUME, resume the task's session instead of starting it."
                        (list "--permission-mode" mode)))
              " "))
 
-(defun godel-agent-start (task &optional resume)
+(defun godel-agent-start (task &optional resume on-launch)
   "Start (or with RESUME, resume) TASK's Claude session.
 The prompt in the task's :pending-prompt is sent once the session has
-started on the right model."
-  (let ((id (plist-get task :id)))
+started on the right model.  ON-LAUNCH, if non-nil, is called with the
+session buffer once the launch has returned (nil if it failed); that's
+the safe moment to show the buffer."
+  (let ((id (plist-get task :id))
+        (on-launch (or on-launch #'ignore)))
     (when (and (godel-models-pin-broken-p)
                (not (godel-models-router-p (godel-models-find (plist-get task :model)))))
       (godel-task-update id :state 'stopped
                          :last-event (format "not started: the model pin isn't working (%s)"
                                              (cdr godel-models-pin-status)))
       (user-error "godel: pinned models are unavailable: %s" (cdr godel-models-pin-status)))
-    (godel-task-update id :state 'setting-up :last-event "checking the notdiamond proxy")
+    ;; A resumed session comes back in the state it was in (e.g. still
+    ;; ready for review); see the SessionStart case in godel-status.el.
+    (when resume
+      (godel-task-update id :resume-state (if (memq (plist-get task :state) '(needs-review idle))
+                                               (plist-get task :state)
+                                             'idle)))
+    (godel-task-update id :state 'setting-up
+                       :last-event (if resume "resuming the session" "checking the notdiamond proxy"))
     (godel-models-ensure-proxy
      (lambda (ok &optional err)
        (if (not ok)
-           (godel-task-update id :state 'stopped :last-event (or err "proxy check failed"))
+           (progn (godel-task-update id :state 'stopped :last-event (or err "proxy check failed"))
+                  (funcall on-launch nil))
          (condition-case e
-             (godel-agent--launch (godel-task-get id) resume)
+             (progn (godel-agent--launch (godel-task-get id) resume)
+                    (funcall on-launch (godel-agent-buffer (godel-task-get id))))
            (error (godel-task-update id :state 'stopped
                                      :last-event (format "launch failed: %s"
-                                                         (error-message-string e))))))))))
+                                                         (error-message-string e)))
+                  (funcall on-launch nil))))))))
 
 (defun godel-agent--launch (task resume)
   (require 'claude-code-ide)
@@ -277,6 +290,33 @@ Resumed sessions don't report a model, so their processes are checked."
            (godel-task-update id :pending-prompt nil))))))))
 
 (add-hook 'godel-status-session-start-functions #'godel-agent--on-session-start)
+
+;;;; Resuming
+
+(defun godel-agent-resumable-p (task)
+  "Non-nil if TASK's session isn't running but can be resumed.
+It must have started before (it has a transcript), its worktree must
+exist, and it mustn't be starting already or flagged as a model mismatch
+\(which needs a deliberate restart)."
+  (and (plist-get task :transcript)
+       (plist-get task :session-id)
+       (not (memq (plist-get task :state) '(setting-up model-mismatch)))
+       (file-directory-p (plist-get task :worktree))
+       (not (godel-agent-live-p task))))
+
+(defun godel-agent-ensure-session (task callback)
+  "Make sure TASK has a running session, then call CALLBACK with its buffer.
+A running session is passed straight away.  A session that can be
+resumed (`godel-agent-resumable-p') is resumed, and CALLBACK runs once
+the launch has returned.  Otherwise, or if resuming fails, CALLBACK gets
+nil."
+  (cond
+   ((godel-agent-live-p task) (funcall callback (godel-agent-buffer task)))
+   ((not (godel-agent-resumable-p task)) (funcall callback nil))
+   (t (condition-case err
+          (godel-agent-start task t callback)
+        (user-error (message "%s" (error-message-string err))
+                    (funcall callback nil))))))
 
 ;;;; Talking to a session
 

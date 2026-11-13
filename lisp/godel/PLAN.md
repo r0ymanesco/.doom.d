@@ -133,8 +133,18 @@ types mean **needs-attention**.
 is lost (`godel-hook` always exits 0 so Claude isn't affected). Sessions run
 inside Emacs, so they end with it too. When `godel-mode` starts, it starts
 the Emacs server if needed and marks tasks that were working, needed
-attention or were setting up as **stopped** ("R to resume"); idle and
-needs-review tasks keep their state. (Rebuilding from transcripts only
+attention or were setting up as **stopped**; idle and needs-review tasks
+keep their state.
+
+**Opening a task resumes its session.** If a task's session isn't running
+(after an Emacs restart, say), opening the task resumes it with
+`--resume <session-id>` on the task's model (pinned, or Not Diamond without
+pins), and shows it on the right once the launch has returned. This happens
+on `RET` (board or sidebar) and on any switch to the task's workspace. The
+task keeps its state: a needs-review task stays needs-review (`:resume-state`,
+restored at `SessionStart`); stopped tasks come back idle. Not resumed
+automatically: model-mismatch tasks (use `R`), tasks still starting, tasks
+whose session never started, and tasks whose worktree is gone. (Rebuilding from transcripts only
 matters once sessions outlive Emacs, with the Phase 3 tmux backend.)
 Every state change runs `godel-event-functions`. That hook updates the store,
 redraws the board (debounced to about 200ms) and the tab bar, and sends a
@@ -633,6 +643,16 @@ workspace. Checked in Doom by reading the terminal's colour codes: each
 state shows its own foreground on the normal background, tab badges
 included; `SPC G a` from a task workspace opens and then reuses "Godel".
 39 ERT tests.
+
+Automatic resume (2026-11-13, after the first GUI restart showed sessions
+didn't come back): tested with a real Haiku task through two Emacs
+restarts. `RET` from the board and a direct workspace switch both resumed
+the same session (`--resume <id>`, Haiku pin), showed it with the earlier
+conversation, and kept needs-review; switching away and back didn't start a
+second session. Found on the way: showing the buffer from a timer could run
+during claude-code-ide's start-up pause and be undone by godel's
+`save-window-excursion`; `godel-agent-start` now takes an ON-LAUNCH
+callback. 43 ERT tests.
 
 **Phase 2: review and ship.** Diff vs base, `C` comments, pending list,
 feedback via `v s`, ask-the-author, independent reviewer (walkthrough and
