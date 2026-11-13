@@ -28,6 +28,7 @@
 (require 'godel-board)
 (require 'godel-sidebar)
 (require 'godel-api)
+(require 'godel-review)
 
 (declare-function notifications-notify "notifications" (&rest params))
 (defvar claude-code-ide-buffer-name-function)

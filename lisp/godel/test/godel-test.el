@@ -316,6 +316,7 @@
   (godel-test-with-env
     (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
            (markdown-mode-hook (list (lambda () (error "Cannot show images"))))
+           (auto-mode-alist (cons '("\\.md\\'" . markdown-mode) auto-mode-alist))
            (godel-compose--last-cancelled nil)
            (buffer (godel-compose repo 'task "test" #'ignore)))
       (should (buffer-live-p buffer))
@@ -836,6 +837,136 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (godel-agent-start (godel-task-get id) t))
       (godel-status-event "SessionStart" (godel-test-payload '((session_id . "sid-r"))))
       (should (eq (plist-get (godel-task-get id) :state) 'idle)))))
+
+(defun godel-test-review-task (tmp)
+  "A task with a real worktree: one tracked file changed, one new file."
+  (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
+         (default-directory repo))
+    (with-temp-file (expand-file-name "app.py" repo)
+      (insert "def a():\n    return 1\n\ndef b():\n    return 2\n"))
+    (call-process "git" nil nil nil "add" "app.py")
+    (call-process "git" nil nil nil "-c" "user.email=t@t" "-c" "user.name=t" "commit" "-q" "-m" "app")
+    (let ((task (godel-task-create :title "rev" :repo repo :base "main")))
+      (call-process "git" nil nil nil "worktree" "add" "-q" "-b" (plist-get task :branch)
+                    (directory-file-name (plist-get task :worktree)) "main")
+      (with-temp-file (expand-file-name "app.py" (plist-get task :worktree))
+        (insert "def a():\n    return 1\n\ndef b():\n    return 20\n\ndef c():\n    return 3\n"))
+      (with-temp-file (expand-file-name "new.txt" (plist-get task :worktree))
+        (insert "brand new\n"))
+      task)))
+
+(ert-deftest godel-test-review-diff-includes-untracked ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (status-before (godel-task--git (plist-get task :worktree) "status" "--porcelain")))
+      (save-window-excursion
+        (godel-review-diff task)
+        (let ((buffer (current-buffer)))
+          (unwind-protect
+              (with-current-buffer buffer
+                (should (derived-mode-p 'magit-diff-mode))
+                (should godel-comment-mode)
+                (should godel-diff-comment-mode)
+                (should (equal godel-review-task-id (plist-get task :id)))
+                (goto-char (point-min))
+                (should (search-forward "app.py" nil t))
+                (goto-char (point-min))
+                (should (search-forward "new.txt" nil t))
+                (should (search-forward "brand new" nil t))
+                ;; Mapping: the "+    return 20" line is new-file line 5.
+                (goto-char (point-min))
+                (search-forward "+    return 20")
+                (should (equal (godel-review--diff-line-at (point)) '("app.py" . 5)))
+                (should (= (line-number-at-pos (godel-review--diff-pos "app.py" 5))
+                           (line-number-at-pos (point)))))
+            (kill-buffer buffer))))
+      ;; The worktree's own index is untouched: new.txt is still untracked.
+      (should (equal (godel-task--git (plist-get task :worktree) "status" "--porcelain")
+                     status-before))
+      (should (string-match-p "^\\?\\? new\\.txt" status-before)))))
+
+(ert-deftest godel-test-review-comments-resolve ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (file (expand-file-name "app.py" (plist-get task :worktree))))
+      (godel-review-add-comment id "app.py" 4 5 "Why 20?")
+      (let ((c (car (godel-review-comments (godel-task-get id)))))
+        (should (equal (plist-get c :anchor) "def b():\n    return 20"))
+        (should (eq (plist-get c :state) 'pending)))
+      ;; Two lines inserted above: the comment follows its text.
+      (with-temp-file file
+        (insert "import os\nimport sys\ndef a():\n    return 1\n\ndef b():\n    return 20\n"))
+      (let ((c (car (godel-review-resolve-all id))))
+        (should (= (plist-get c :start) 6))
+        (should (= (plist-get c :end) 7))
+        (should (eq (plist-get c :state) 'pending)))
+      ;; The text is gone: outdated.
+      (with-temp-file file (insert "def b():\n    return 21\n"))
+      (should (eq (plist-get (car (godel-review-resolve-all id)) :state) 'outdated))
+      ;; Update and delete.
+      (godel-review-add-comment id "new.txt" 1 1 "Rename this")
+      (let ((cid (plist-get (cadr (plist-get (godel-task-get id) :comments)) :id)))
+        (godel-review-update-comment id cid :text "Rename it")
+        (should (equal (plist-get (cadr (plist-get (godel-task-get id) :comments)) :text) "Rename it"))
+        (godel-review-delete-comment id cid)
+        (should (= (length (plist-get (godel-task-get id) :comments)) 1))))))
+
+(ert-deftest godel-test-review-comments-shown-in-diff-and-file ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id)))
+      ;; The test environment clears this hook; godel-review installs it.
+      (add-hook 'godel-event-functions #'godel-review--refresh-buffers)
+      (godel-review-add-comment id "app.py" 5 5 "Why 20?")
+      (save-window-excursion
+        (godel-review-diff task)
+        (let ((buffer (current-buffer)))
+          (unwind-protect
+              (with-current-buffer buffer
+                (should (= (length godel-comment--overlays) 1))
+                (should (string-match-p "Why 20\\?" (overlay-get (car godel-comment--overlays) 'after-string)))
+                ;; Adding a comment redraws the open diff.
+                (godel-review-add-comment id "new.txt" 1 1 "Is this needed?")
+                (should (= (length godel-comment--overlays) 2))
+                ;; gn moves to the comments.
+                (goto-char (point-min))
+                (godel-comment-next)
+                (should (looking-at ".*return 20")))
+            (kill-buffer buffer))))
+      ;; In a file of the worktree: shown, but no keys bound.
+      (let ((buffer (find-file-noselect (expand-file-name "app.py" (plist-get task :worktree)))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should godel-comment-mode)
+              (should-not godel-diff-comment-mode)
+              (should (= (length godel-comment--overlays) 1)))
+          (kill-buffer buffer))))))
+
+(ert-deftest godel-test-board-comment-summary ()
+  (should-not (godel-board--comment-summary '(:comments nil)))
+  (should (equal (godel-board--comment-summary
+                  '(:comments ((:state pending) (:state sent) (:state pending) (:state outdated))))
+                 "2 pending, 1 sent, 1 outdated")))
+
+(ert-deftest godel-test-compose-quote-not-submitted ()
+  (godel-test-with-env
+    (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
+           (godel-compose--last-cancelled nil)
+           got
+           (buffer (godel-compose repo 'comment "c" (lambda (text) (setq got text))
+                                  nil "> quoted line")))
+      (with-current-buffer buffer
+        ;; Shown above the text, not part of it.
+        (should (equal (buffer-string) ""))
+        (should (cl-some (lambda (ov) (string-match-p "quoted line" (or (overlay-get ov 'before-string) "")))
+                         (overlays-in (point-min) (point-max))))
+        ;; Typing works from where the buffer starts.
+        (insert "My comment")
+        (should (cl-some (lambda (ov) (= (overlay-start ov) (point-min)))
+                         (overlays-in (point-min) (point-max))))
+        (godel-compose-submit))
+      (should (equal got "My comment")))))
 
 (ert-deftest godel-test-reconcile-marks-dead-sessions-stopped ()
   (godel-test-with-env

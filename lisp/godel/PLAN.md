@@ -66,7 +66,9 @@ lisp/godel/
   godel-sidebar.el   ; the sidebar window: SPC G o, auto-open in task workspaces
   godel-compose.el   ; godel-compose-mode (prompt / comment / feedback editing)
   godel-new.el       ; new-task transient (model/effort pickers) and task creation
-  godel-review.el    ; diffs, comments, reviewers, feedback, ship
+  godel-review.el    ; task diffs, comments, review list, feedback, ask the author
+  godel-reviewer.el  ; independent reviewer: structured review and walkthrough
+  godel-ship.el      ; author-drafted commit message and PR, push, merged state
   godel-api.el       ; godel-api-* entry points for external frontends
   bin/godel-hook     ; called by Claude Code hooks; forwards to emacsclient
   bin/godel-probe    ; stand-in Claude binary for the pin check
@@ -678,6 +680,31 @@ checking upstream. 48 ERT tests.
 **Phase 2: review and ship.** Diff vs base, `C` comments, pending list,
 feedback via `v s`, ask-the-author, independent reviewer (walkthrough and
 structured), ship transient, import an existing worktree.
+
+Decisions (2026-11-13), which override the Review and Ship sections where
+they differ:
+- **Diff scope:** the working tree (uncommitted and untracked changes
+  included) against the merge base with the task's base branch. Untracked
+  files are shown by diffing against a temporary copy of the index with
+  them added as intent-to-add (`GIT_INDEX_FILE` through a buffer-local
+  `magit-git-environment`); the worktree's real index is never touched.
+- **Keys in task diffs:** `C` comment (overrides `magit-commit-add-log`);
+  `gn`/`gp` next/previous comment (`]`/`[` are magit's section navigation in
+  evil-collection, so `]c`/`[c` can't be used). A comment is deleted from
+  the review list. Findings: `a` accept, `x` drop.
+- **Reviewer:** defaults to Not Diamond; model selectable per review.
+  Reviewer sessions are separate from the task: headless runs use
+  `--no-session-persistence` and no godel hooks; the walkthrough is a
+  claude-code-ide instance named `review` (godel supplies the name, so no
+  prompt) without godel hooks, so neither changes the task's state.
+- **Ship:** the author drafts the commit message and PR description from
+  its own conversation (`--resume <id> --fork-session -p`, so its live
+  session is untouched); you edit the draft in a compose buffer; `:wq`
+  commits, pushes and opens the PR with `gh`. A new **merged** state is
+  set when `gh` reports the PR merged.
+- `J` (judge) moves to Phase 4 with fan-out.
+- Built in steps: diff and comments; feedback loop; ask the author;
+  independent reviewer; ship; import an existing worktree.
 
 **Phase 3: durability.** On startup, offer `--resume <session-id>` for tasks
 that were running. Optional tmux backend so agents keep running when Emacs

@@ -24,6 +24,13 @@
 (defvar-local godel-compose--kind nil)
 (defvar-local godel-compose--repo nil)
 
+(defconst godel-compose-restorable-kinds '(task)
+  "Kinds whose cancelled drafts are offered again next time.")
+
+(defun godel-compose--text ()
+  "The buffer's text (a quote, if any, is only displayed above it)."
+  (string-trim (buffer-substring-no-properties (point-min) (point-max))))
+
 (defvar godel-compose--last-cancelled nil
   "Alist of (KIND . DRAFT-FILE) for the last cancelled draft of each kind.")
 
@@ -33,7 +40,7 @@
 (defun godel-compose-submit ()
   "Submit this buffer's text."
   (interactive)
-  (let ((text (string-trim (buffer-string)))
+  (let ((text (godel-compose--text))
         (callback godel-compose--callback)
         (file buffer-file-name))
     (if (string-empty-p text)
@@ -45,7 +52,7 @@
 (defun godel-compose-cancel ()
   "Cancel; keep the draft so it can be restored next time."
   (interactive)
-  (let ((text (string-trim (buffer-string))))
+  (let ((text (godel-compose--text)))
     (if (string-empty-p text)
         (godel-compose--close nil)
       (let ((save-silently t)) (save-buffer))
@@ -78,17 +85,24 @@
   (expand-file-name (format "%s-%s.md" kind (format-time-string "%Y%m%d-%H%M%S"))
                     (expand-file-name "drafts" (godel-task-store-dir repo))))
 
-(defun godel-compose (repo kind header callback &optional initial)
+(defun godel-compose (repo kind header callback &optional initial quote)
   "Open a compose buffer for KIND (a symbol) in REPO.
 HEADER is shown in the header line.  CALLBACK gets the text on submit.
-INITIAL is inserted; if a cancelled draft of KIND exists, offer it first."
-  (let* ((last (alist-get kind godel-compose--last-cancelled))
+INITIAL is inserted.  QUOTE, if non-nil, is displayed above the text
+\(an overlay, so it can't be edited and isn't saved or submitted).  For kinds in
+`godel-compose-restorable-kinds', a cancelled draft is offered first."
+  (let* ((last (and (memq kind godel-compose-restorable-kinds)
+                    (alist-get kind godel-compose--last-cancelled)))
          (restore (and last (file-exists-p last)
                        (y-or-n-p "godel: restore the draft you cancelled last time? ")))
          (file (if restore last (godel-compose--draft-file repo kind))))
     (setf (alist-get kind godel-compose--last-cancelled nil 'remove) nil)
     (make-directory (file-name-directory file) t)
-    (let ((buffer (find-file-noselect file)))
+    ;; No file-type detection: it would run markdown-mode and the user's
+    ;; `markdown-mode-hook' before godel-compose-mode takes over.
+    (let ((buffer (let ((auto-mode-alist nil) (magic-mode-alist nil)
+                        (magic-fallback-mode-alist nil))
+                    (find-file-noselect file))))
       (with-current-buffer buffer
         ;; Not the user's markdown-mode-hook: settings like inline images or
         ;; markup hiding don't suit a prompt draft (and images fail in a
@@ -103,8 +117,15 @@ INITIAL is inserted; if a cancelled draft of KIND exists, offer it first."
                       (substitute-command-keys
                        "\\<godel-compose-keys-mode-map>:wq or \\[godel-compose-submit] submit · :q! or \\[godel-compose-cancel] cancel")))
         (when (and initial (not restore) (zerop (buffer-size)))
-          (insert initial)))
+          (insert initial))
+        (when quote
+          (let ((ov (make-overlay (point-min) (point-min) nil nil nil)))
+            (overlay-put ov 'before-string
+                         (propertize (concat quote "\n") 'face 'shadow))
+            (overlay-put ov 'godel-compose-quote t))))
       (pop-to-buffer buffer)
+      ;; Start below any read-only quote.
+      (goto-char (point-max))
       (when (fboundp 'evil-insert-state) (evil-insert-state))
       buffer)))
 

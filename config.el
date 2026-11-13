@@ -642,13 +642,15 @@ Updates the variable and resizes the live window if visible."
 ;; godel: agent development environment (lisp/godel, see lisp/godel/PLAN.md)
 (add-to-list 'load-path (expand-file-name "lisp/godel" doom-user-dir))
 (use-package! godel
-  :commands (godel-board godel-new-task godel-sidebar-toggle godel-refresh-model-options)
+  :commands (godel-board godel-new-task godel-sidebar-toggle godel-review-comment
+             godel-refresh-model-options)
   :config (godel-mode 1))
 (map! :leader
       :prefix ("G" . "godel")
       :desc "Board" "a" #'godel-board
       :desc "New task" "n" #'godel-new-task
       :desc "Sidebar" "o" #'godel-sidebar-toggle
+      :desc "Comment on line/region" "c" #'godel-review-comment
       :desc "Refresh model list" "M" #'godel-refresh-model-options)
 
 ;; Markdown

@@ -10,7 +10,8 @@
 ;;   RET  open the task's workspace     n  new task
 ;;   TAB  show details                  m  message the agent
 ;;   R    restart/resume (new model?)   x  tear down (keeps the branch)
-;;   gr   refresh                       q  quit (hides the sidebar)
+;;   d    diff with comments (C)        gr refresh
+;;   q    quit (hides the sidebar)
 
 ;;; Code:
 
@@ -23,6 +24,7 @@
 (require 'godel-worktree)
 
 (declare-function godel-new-task "godel-new" (&optional repo))
+(declare-function godel-review-diff "godel-review" (task))
 (declare-function godel-new--read-model "godel-new" (prompt initial history))
 (declare-function magit-status-setup-buffer "magit-status" (&optional directory))
 (declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide" (buffer))
@@ -123,6 +125,7 @@ board) removes plain `face' properties when it fontifies."
   "m" #'godel-board-message
   "R" #'godel-board-restart
   "x" #'godel-board-teardown
+  "d" #'godel-board-diff
   "g r" #'godel-board-refresh
   "q" #'godel-board-quit)
 
@@ -146,6 +149,7 @@ board) removes plain `face' properties when it fontifies."
     "m" #'godel-board-message
     "R" #'godel-board-restart
     "x" #'godel-board-teardown
+    "d" #'godel-board-diff
     "gr" #'godel-board-refresh
     "q" #'godel-board-quit))
 
@@ -207,6 +211,7 @@ board) removes plain `face' properties when it fontifies."
                                      (if-let* ((a (plist-get task :model-actual)))
                                          (format "  (running %s)" a) "")))
                    ("changes" ,(plist-get task :diffstat))
+                   ("comments" ,(godel-board--comment-summary task))
                    ("last message" ,(plist-get task :last-message))
                    ("session" ,(if (godel-agent-live-p task) "running" "not running"))))
       (when (cadr row)
@@ -216,6 +221,17 @@ board) removes plain `face' properties when it fontifies."
                     "\n")
           (insert (godel-board--paint (format "%s%-13s" (make-string indent ?\s) (car row)) 'godel-board-dim)
                   (cadr row) "\n"))))))
+
+(defun godel-board--comment-summary (task)
+  "Like \"2 pending, 1 sent\", or nil if TASK has no review comments."
+  (let ((counts nil))
+    (dolist (c (plist-get task :comments))
+      (cl-incf (alist-get (plist-get c :state) counts 0)))
+    (when counts
+      (mapconcat (lambda (st) (format "%d %s" (alist-get st counts) st))
+                 (cl-remove-if-not (lambda (st) (alist-get st counts))
+                                   '(pending sent addressed outdated))
+                 ", "))))
 
 (defun godel-board--insert-task (task)
   "Insert TASK as a full-board row."
@@ -473,6 +489,14 @@ workspace."
                             (godel-task-by-slug (ignore-errors (+workspace-current-name))))))
        (when (godel-agent-resumable-p task)
          (godel-board--show-session task))))))
+
+(defun godel-board-diff ()
+  "Show the task's changes against its base branch, with comments."
+  (interactive)
+  (require 'godel-review)
+  (let ((task (godel-board--task)))
+    (when godel-board--compact (select-window (window-main-window)))
+    (godel-review-diff task)))
 
 (defun godel-board-message ()
   "Send a message to the task's agent."
