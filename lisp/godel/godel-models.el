@@ -356,20 +356,76 @@ CALLBACK with the status."
   :group 'godel
   :type 'integer)
 
+(defcustom godel-proxy-address nil
+  "(HOST . PORT) of the notdiamond proxy, or nil to read it from the
+notdiamond config (server.host and server.port)."
+  :group 'godel
+  :type '(choice (const :tag "From the notdiamond config" nil)
+                 (cons string integer)))
+
+(defun godel-models--proxy-address ()
+  (or godel-proxy-address
+      (let* ((config (ignore-errors
+                       (with-temp-buffer
+                         (insert-file-contents (godel-models--notdiamond-config))
+                         (json-parse-buffer :object-type 'alist))))
+             (server (alist-get 'server config)))
+        (cons (or (alist-get 'host server) "127.0.0.1")
+              (or (alist-get 'port server) 8082)))))
+
+(defun godel-models--proxy-answers-p (callback)
+  "Ask the proxy for /stats directly; CALLBACK gets non-nil on HTTP 200.
+Much faster than `notdiamond status' (no Node start-up).  Any failure,
+or no answer within 2 seconds, gives nil."
+  (let* ((address (godel-models--proxy-address))
+         (done nil) (response "") proc
+         (finish (lambda (ok)
+                   (unless done
+                     (setq done t)
+                     (when (process-live-p proc) (delete-process proc))
+                     (funcall callback ok)))))
+    (condition-case nil
+        (progn
+          (setq proc (make-network-process
+                      :name "godel-proxy-check" :host (car address) :service (cdr address)
+                      :nowait t :noquery t :coding 'binary
+                      :filter (lambda (_ out)
+                                (setq response (concat response out))
+                                (when (string-match "\\`HTTP/1\\.[01] \\([0-9]+\\)" response)
+                                  (funcall finish (equal (match-string 1 response) "200"))))
+                      :sentinel (lambda (p event)
+                                  (cond ((string-prefix-p "open" event)
+                                         (process-send-string
+                                          p (format "GET /stats HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n"
+                                                    (car address))))
+                                        ((not (memq (process-status p) '(open connect)))
+                                         (funcall finish nil))))))
+          (run-with-timer 2 nil finish nil))
+      (error (funcall finish nil)))))
+
 (defun godel-models--proxy-ok-p (output)
   (let ((status (ignore-errors
                   (json-parse-string (string-trim output) :object-type 'alist))))
     (eq (alist-get 'ok status) t)))
+
+(defun godel-models--proxy-up-p (callback)
+  "CALLBACK gets non-nil if the proxy is up: asked directly first, then
+through `notdiamond status'."
+  (godel-models--proxy-answers-p
+   (lambda (up)
+     (if up
+         (funcall callback t)
+       (godel-models--run godel-notdiamond-program '("status" "--json")
+                          (lambda (_ out) (funcall callback (godel-models--proxy-ok-p out))))))))
 
 (defun godel-models-ensure-proxy (callback)
   "Make sure the notdiamond proxy is running, then call CALLBACK with t.
 If no proxy is running, start one with the pin variables unset, so it
 can't inherit routing off from a pinned launch.  CALLBACK gets nil and
 an error message if the proxy doesn't come up."
-  (godel-models--run
-   godel-notdiamond-program '("status" "--json")
-   (lambda (_ out)
-     (if (godel-models--proxy-ok-p out)
+  (godel-models--proxy-up-p
+   (lambda (up)
+     (if up
          (funcall callback t)
        (message "godel: starting the notdiamond proxy")
        (godel-models--run
@@ -379,10 +435,9 @@ an error message if the proxy doesn't come up."
         nil (godel-models--clean-env))))))
 
 (defun godel-models--wait-proxy (deadline callback)
-  (godel-models--run
-   godel-notdiamond-program '("status" "--json")
-   (lambda (_ out)
-     (cond ((godel-models--proxy-ok-p out) (funcall callback t))
+  (godel-models--proxy-up-p
+   (lambda (up)
+     (cond (up (funcall callback t))
            ((> (float-time) deadline)
             (funcall callback nil "the notdiamond proxy didn't start"))
            (t (run-with-timer 0.5 nil #'godel-models--wait-proxy deadline callback))))))

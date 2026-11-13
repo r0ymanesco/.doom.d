@@ -287,8 +287,11 @@ once.
 Launch steps:
 1. **Proxy guard (every launch).** A proxy started by a pinned launch would
    inherit `NOTDIAMOND_ROUTING=off` and turn routing off for **every** session
-   until it restarts. So before every launch, godel runs
-   `notdiamond status --json`. If no proxy is running, godel starts one itself
+   until it restarts. So before every launch, godel checks the proxy: first
+   by asking it directly for `/stats` over HTTP (address from the notdiamond
+   config, `godel-proxy-address` to override; ~0.02s), and only if that
+   fails with `notdiamond status --json` (~1.2s, mostly Node start-up). If
+   no proxy is running, godel starts one itself
    with `notdiamond start` in an environment with the three pin variables
    removed, and waits for `status` to report `ok`. Running it before every
    launch (not just pinned ones) means the proxy is always one godel started
@@ -662,6 +665,15 @@ closed: one start per task (`godel-agent--starting`; a second request waits
 for the first and gets its buffer), every check reads the stored task, no
 launch over a live session, and `R` refuses while a task is starting.
 46 ERT tests.
+
+Faster proxy check (2026-11-13): the guard asked `notdiamond status`, which
+took ~1.2s per launch; it now asks the proxy directly first (~0.02s).
+Measured resume after this: `RET` to Claude window 0.45s (1.07s on the
+first resume after starting Emacs, which also loads claude-code-ide, the
+terminal module and magit); Claude is ready for input ~2s later, which is
+Claude's own start-up. Also found: the "Method not found" (-32601) errors
+come from claude-code-ide's Emacs-tools MCP server, not godel; the user is
+checking upstream. 48 ERT tests.
 
 **Phase 2: review and ship.** Diff vs base, `C` comments, pending list,
 feedback via `v s`, ask-the-author, independent reviewer (walkthrough and

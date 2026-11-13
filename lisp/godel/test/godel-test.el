@@ -9,6 +9,14 @@
 (require 'ert)
 (require 'godel)
 
+(defun godel-test-free-port ()
+  "A local TCP port nothing is listening on."
+  (let* ((server (make-network-process :name "godel-test-port" :server t :host "127.0.0.1"
+                                       :service t :noquery t))
+         (port (process-contact server :service)))
+    (delete-process server)
+    port))
+
 (defmacro godel-test-with-env (&rest body)
   "Run BODY with godel's state and files in a temporary directory."
   (declare (indent 0))
@@ -19,7 +27,9 @@
           (godel-task--loaded-repos nil)
           (godel-event-functions nil)
           (godel-status-session-start-functions nil)
-          (godel-models--cache nil))
+          (godel-models--cache nil)
+          ;; Never reach a real notdiamond proxy from the tests.
+          (godel-proxy-address (cons "127.0.0.1" (godel-test-free-port))))
      (unwind-protect (progn ,@body)
        (delete-directory tmp t))))
 
@@ -38,6 +48,18 @@
     (while (and (not (funcall pred)) (< (float-time) deadline))
       (accept-process-output nil 0.05))
     (funcall pred)))
+
+(defmacro godel-test-with-http (status &rest body)
+  "Run BODY with `godel-proxy-address' at a local server answering STATUS."
+  (declare (indent 1))
+  `(let* ((server (make-network-process
+                   :name "godel-test-http" :server t :host "127.0.0.1" :service t :noquery t
+                   :filter (lambda (conn _)
+                             (process-send-string
+                              conn (format "HTTP/1.1 %d X\r\nContent-Length: 2\r\n\r\n{}" ,status))
+                             (delete-process conn))))
+          (godel-proxy-address (cons "127.0.0.1" (process-contact server :service))))
+     (unwind-protect (progn ,@body) (delete-process server))))
 
 (defun godel-test-payload (alist)
   (base64-encode-string (encode-coding-string (json-encode alist) 'utf-8) t))
@@ -339,6 +361,8 @@
            (env-log (expand-file-name "start-env" tmp))
            (fake (expand-file-name "notdiamond" tmp))
            (godel-notdiamond-program fake)
+           ;; Nothing listening, so the direct check fails and the CLI is used.
+           (godel-proxy-address (cons "127.0.0.1" (godel-test-free-port)))
            (process-environment (append '("NOTDIAMOND_ROUTING=off"
                                           "NOTDIAMOND_RESEARCH_MODEL_PIN=opus")
                                         process-environment))
@@ -432,6 +456,49 @@ The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
            (task (godel-task-create :title "p" :repo repo :base "main" :model "sonnet")))
       (should-error (godel-agent-start task) :type 'user-error)
       (should (eq (plist-get (godel-task-get (plist-get task :id)) :state) 'stopped)))))
+
+(ert-deftest godel-test-proxy-check-direct ()
+  "The proxy is asked directly; the CLI only runs if that fails."
+  (godel-test-with-env
+    (let* ((log (expand-file-name "cli-calls" tmp))
+           (fake (expand-file-name "notdiamond" tmp))
+           (godel-notdiamond-program fake)
+           (result 'pending))
+      (with-temp-file fake
+        (insert "#!/bin/sh\necho \"$1\" >> " (shell-quote-argument log) "\necho '{\"ok\":false}'\n"))
+      (set-file-modes fake #o755)
+      ;; 200: up, no CLI.
+      (godel-test-with-http 200
+        (godel-models--proxy-up-p (lambda (up) (setq result up)))
+        (should (godel-test-wait (lambda () (not (eq result 'pending))) 3))
+        (should (eq result t))
+        (should-not (file-exists-p log)))
+      ;; 500: falls back to the CLI (which says not ok here).
+      (setq result 'pending)
+      (godel-test-with-http 500
+        (godel-models--proxy-up-p (lambda (up) (setq result up)))
+        (should (godel-test-wait (lambda () (not (eq result 'pending))) 5))
+        (should (null result))
+        (should (file-exists-p log)))
+      ;; Nothing listening: falls back to the CLI too.
+      (delete-file log)
+      (setq result 'pending)
+      (let ((godel-proxy-address (cons "127.0.0.1" (godel-test-free-port))))
+        (godel-models--proxy-up-p (lambda (up) (setq result up)))
+        (should (godel-test-wait (lambda () (not (eq result 'pending))) 5))
+        (should (null result))
+        (should (file-exists-p log))))))
+
+(ert-deftest godel-test-proxy-address-from-config ()
+  (godel-test-with-env
+    (let ((config (expand-file-name "nd.json" tmp))
+          (godel-proxy-address nil))
+      (with-temp-file config (insert "{\"server\":{\"port\":9123,\"host\":\"127.0.0.2\"}}"))
+      (let ((process-environment (cons (concat "NOTDIAMOND_CONFIG=" config) process-environment)))
+        (should (equal (godel-models--proxy-address) '("127.0.0.2" . 9123))))
+      (let ((process-environment (cons (concat "NOTDIAMOND_CONFIG=" tmp "/missing.json")
+                                       process-environment)))
+        (should (equal (godel-models--proxy-address) '("127.0.0.1" . 8082)))))))
 
 (ert-deftest godel-test-workspace-badge ()
   (godel-test-with-env
