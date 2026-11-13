@@ -379,6 +379,31 @@ godel · 5 tasks in 2 repos      n new · RET open · m message · R restart · 
 `TAB` on a repo heading collapses it (remembered across refreshes). `n` on a
 repo heading creates a task in that repo; on a task, in the task's repo.
 
+**The board has its own workspace.** `SPC G a` switches to a Doom workspace
+named **Godel** (`godel-board-workspace`), creating it with the board on
+first use; afterwards it just switches back there. Without Doom workspaces
+the board opens in the selected window.
+
+**Colours.** Each state has its own colour, used for the icons, the counts,
+the reason text, and the tab-bar badges:
+
+| | State | Colour |
+|---|---|---|
+| ● | Needs attention | red, bold |
+| ✗ | Model mismatch | magenta, bold |
+| ◐ | Working | yellow |
+| … | Setting up | blue |
+| ✓ | Needs review | green |
+| ○ | Idle | normal text colour |
+| ■ | Stopped | grey |
+
+The colours are the *foreground* of the theme's `ansi-color-*` faces, so they
+follow the theme (only the foreground: those faces also set a background).
+The faces are `godel-state-<state>`; anything set on them with
+`custom-set-faces!` takes priority. Text uses `font-lock-face` as well as
+`face`, because font-lock (on in the board) strips plain `face` properties;
+that's why the icons first showed up white.
+
 ### Sidebar (`SPC G o`)
 
 The same board in a narrow window on the left, with the same keys. Compact
@@ -601,6 +626,13 @@ re-shown in task workspaces, `n` on a task and on a repo heading. Fixed
 along the way: Doom's indent guides in the sidebar (godel opts out through
 `+indent-guides-inhibit-functions`), and row width leaving room for magit's
 "…". 34 ERT tests.
+
+Follow-ups after the first GUI look (2026-11-13): state colours (icons were
+white because font-lock removed their faces), and the board's own "Godel"
+workspace. Checked in Doom by reading the terminal's colour codes: each
+state shows its own foreground on the normal background, tab badges
+included; `SPC G a` from a task workspace opens and then reuses "Godel".
+39 ERT tests.
 
 **Phase 2: review and ship.** Diff vs base, `C` comments, pending list,
 feedback via `v s`, ask-the-author, independent reviewer (walkthrough and

@@ -993,23 +993,30 @@ Updates the variable and resizes the live window if visible."
                 (name (cdr pair))
                 (active (string= name current))
                 (n name)
-                ;; godel task workspaces get a state badge (● needs you, ✓ review).
+                ;; godel task workspaces get a coloured state badge (● needs you,
+                ;; ◐ working, ✓ review).
                 (badge (if (fboundp 'godel-workspace-badge) (godel-workspace-badge name) ""))
+                (badge-start (1+ (length (format "%d:%s" i name))))
                 ;; The active marker MUST differ in characters (not just face):
                 ;; the tab-bar redisplay compares content with `equal', which
                 ;; ignores text properties, so a face-only change is never drawn.
                 (text (if active
                           (format "▎%d:%s%s ▎" i name badge)
                         (format " %d:%s%s " i name badge))))
-           (propertize
-            text
-            'face (if active 'tab-bar-tab 'tab-bar-tab-inactive)
-            'mouse-face 'tab-bar-tab-highlight
-            'help-echo (format "Switch to workspace %s" n)
-            'keymap (let ((m (make-sparse-keymap)))
-                      (define-key m [tab-bar mouse-1]
-                        (lambda (_e) (interactive "e") (persp-switch n)))
-                      m))))
+           (setq text
+                 (propertize
+                  text
+                  'face (if active 'tab-bar-tab 'tab-bar-tab-inactive)
+                  'mouse-face 'tab-bar-tab-highlight
+                  'help-echo (format "Switch to workspace %s" n)
+                  'keymap (let ((m (make-sparse-keymap)))
+                            (define-key m [tab-bar mouse-1]
+                              (lambda (_e) (interactive "e") (persp-switch n)))
+                            m)))
+           ;; Layer the badge's colour over the tab face set just above.
+           (when-let* ((face (and (> (length badge) 0) (get-text-property 0 'face badge))))
+             (add-face-text-property badge-start (+ badge-start (length badge)) face nil text))
+           text))
        (cl-loop for n in names for i from 1 collect (cons i n))
        (propertize " " 'face 'tab-bar)))))
 

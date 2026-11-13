@@ -57,17 +57,45 @@
   '((needs-attention . "●") (model-mismatch . "✗") (working . "◐")
     (setting-up . "…") (needs-review . "✓") (idle . "○") (stopped . "■")))
 
-(defface godel-board-attention '((t :inherit error)) "Tasks needing you.")
-(defface godel-board-working '((t :inherit warning)) "Working tasks.")
-(defface godel-board-review '((t :inherit success)) "Tasks ready for review.")
-(defface godel-board-dim '((t :inherit shadow)) "Secondary text.")
+;; One face per state.  The colour is the foreground of the theme's ANSI
+;; colour for that state (Doom themes map these to their palette), looked up
+;; when drawing so it follows theme changes.  Only the foreground: the
+;; `ansi-color-*' faces also set a background, which would turn text into
+;; solid blocks.  Anything set on a `godel-state-*' face (e.g. with
+;; `custom-set-faces!') takes priority over the theme colour.
+(defface godel-state-needs-attention '((t :weight bold))
+  "Tasks that need you (red)." :group 'godel)
+(defface godel-state-model-mismatch '((t :weight bold))
+  "Tasks that started on the wrong model (magenta)." :group 'godel)
+(defface godel-state-working '((t))
+  "Tasks the agent is working on (yellow)." :group 'godel)
+(defface godel-state-setting-up '((t))
+  "Tasks being set up: worktree, starting Claude (blue)." :group 'godel)
+(defface godel-state-needs-review '((t))
+  "Tasks ready for review (green)." :group 'godel)
+(defface godel-state-idle '((t :inherit default))
+  "Idle tasks (the normal text colour)." :group 'godel)
+(defface godel-state-stopped '((t :inherit shadow))
+  "Tasks whose session has ended (grey)." :group 'godel)
+(defface godel-board-dim '((t :inherit shadow)) "Secondary text." :group 'godel)
+
+(defconst godel-board--state-colours
+  '((needs-attention . red) (model-mismatch . magenta) (working . yellow)
+    (setting-up . blue) (needs-review . green))
+  "ANSI colour for each state; states not listed use their face only.")
 
 (defun godel-board--state-face (state)
-  (pcase state
-    ((or 'needs-attention 'model-mismatch) 'godel-board-attention)
-    ((or 'working 'setting-up) 'godel-board-working)
-    ('needs-review 'godel-board-review)
-    (_ 'godel-board-dim)))
+  "Face for STATE: its `godel-state-*' face, over the theme's ANSI colour."
+  (let* ((state (or state 'idle))
+         (face (intern (format "godel-state-%s" state)))
+         (colour (alist-get state godel-board--state-colours))
+         (fg (and colour (face-foreground (intern (format "ansi-color-%s" colour)) nil t))))
+    (if fg (list face (list :foreground fg)) face)))
+
+(defun godel-board--paint (string face)
+  "STRING with FACE.  Uses `font-lock-face' too: font-lock (on in the
+board) removes plain `face' properties when it fontifies."
+  (propertize string 'face face 'font-lock-face face))
 
 (defun godel-board--age (time)
   (if (not time) ""
@@ -143,11 +171,11 @@
              :key #'car)))
 
 (defconst godel-board--count-icons
-  '(("●" godel-board-attention needs-attention model-mismatch)
-    ("◐" godel-board-working working setting-up)
-    ("✓" godel-board-review needs-review)
-    ("○" godel-board-dim idle)
-    ("■" godel-board-dim stopped)))
+  '(("●" godel-state-needs-attention needs-attention model-mismatch)
+    ("◐" godel-state-working working setting-up)
+    ("✓" godel-state-needs-review needs-review)
+    ("○" godel-state-idle idle)
+    ("■" godel-state-stopped stopped)))
 
 (defun godel-board--counts (tasks)
   "Counts per state for TASKS, like \"●1 ◐2 ✓1\"."
@@ -157,7 +185,7 @@
                                                                           (cddr c)))
                                                        tasks)))
                                    (when (> n 0)
-                                     (propertize (format "%s%d" (car c) n) 'face (cadr c)))))
+                                     (godel-board--paint (format "%s%d" (car c) n) (cadr c)))))
                                godel-board--count-icons))
              " "))
 
@@ -168,7 +196,7 @@
 
 (defun godel-board--icon (task)
   (let ((state (plist-get task :state)))
-    (propertize (alist-get state godel-board-icons "?") 'face (godel-board--state-face state))))
+    (godel-board--paint (alist-get state godel-board-icons "?") (godel-board--state-face state))))
 
 (defun godel-board--details (task indent)
   (let ((width (if godel-board--compact (- godel-sidebar-width indent 2) 1000)))
@@ -183,10 +211,10 @@
                    ("session" ,(if (godel-agent-live-p task) "running" "not running"))))
       (when (cadr row)
         (if godel-board--compact
-            (insert (propertize (format "%s%s: " (make-string indent ?\s) (car row)) 'face 'godel-board-dim)
+            (insert (godel-board--paint (format "%s%s: " (make-string indent ?\s) (car row)) 'godel-board-dim)
                     (truncate-string-to-width (cadr row) (max 10 (- width (length (car row)))) nil nil "…")
                     "\n")
-          (insert (propertize (format "%s%-13s" (make-string indent ?\s) (car row)) 'face 'godel-board-dim)
+          (insert (godel-board--paint (format "%s%-13s" (make-string indent ?\s) (car row)) 'godel-board-dim)
                   (cadr row) "\n"))))))
 
 (defun godel-board--insert-task (task)
@@ -197,13 +225,13 @@
       (magit-insert-heading
         (format "      %s %-32s %-14s %-50s %s"
                 (godel-board--icon task)
-                (propertize (truncate-string-to-width (plist-get task :title) 32 nil nil "…")
-                            'face 'magit-section-secondary-heading)
+                (godel-board--paint (truncate-string-to-width (plist-get task :title) 32 nil nil "…")
+                            'magit-section-secondary-heading)
                 (truncate-string-to-width (godel-board--model-label task) 14 nil nil "…")
-                (propertize (truncate-string-to-width (or (plist-get task :last-event) "") 50 nil nil "…")
-                            'face face)
-                (propertize (godel-board--age (or (plist-get task :updated) (plist-get task :created)))
-                            'face 'godel-board-dim)))
+                (godel-board--paint (truncate-string-to-width (or (plist-get task :last-event) "") 50 nil nil "…")
+                            face)
+                (godel-board--paint (godel-board--age (or (plist-get task :updated) (plist-get task :created)))
+                            'godel-board-dim)))
       (godel-board--details task 8))))
 
 (defun godel-board--insert-task-compact (task current)
@@ -217,29 +245,29 @@
          (attention (memq state '(needs-attention model-mismatch))))
     (magit-insert-section (godel-task id (not (member id godel-board--expanded)))
       (magit-insert-heading
-        (concat (if (equal id current) (propertize "▶" 'face 'godel-board-working) " ")
+        (concat (if (equal id current) (godel-board--paint "▶" 'godel-state-working) " ")
                 (godel-board--icon task) " "
-                (propertize (truncate-string-to-width (plist-get task :title) title-width nil ?\s "…")
-                            'face (if (equal id current) 'magit-section-highlight
+                (godel-board--paint (truncate-string-to-width (plist-get task :title) title-width nil ?\s "…")
+                            (if (equal id current) 'magit-section-highlight
                                     'magit-section-secondary-heading))
-                " " (propertize age 'face 'godel-board-dim)
+                " " (godel-board--paint age 'godel-board-dim)
                 (when attention
                   (concat "\n    "
-                          (propertize (truncate-string-to-width (or (plist-get task :last-event) "")
+                          (godel-board--paint (truncate-string-to-width (or (plist-get task :last-event) "")
                                                                 (- godel-sidebar-width 8) nil nil "…")
-                                      'face 'godel-board-attention)))))
+                                      'godel-state-needs-attention)))))
       (godel-board--details task 4))))
 
 (defun godel-board--insert-header (tasks repos)
   (if godel-board--compact
-      (insert (propertize " godel" 'face 'magit-section-heading)
+      (insert (godel-board--paint " godel" 'magit-section-heading)
               "  " (godel-board--counts tasks) "\n")
-    (insert (propertize (format "godel · %d task%s in %d repo%s"
+    (insert (godel-board--paint (format "godel · %d task%s in %d repo%s"
                                 (length tasks) (if (= 1 (length tasks)) "" "s")
                                 (length repos) (if (= 1 (length repos)) "" "s"))
-                        'face 'magit-section-heading)
-            (propertize "      n new · RET open · m message · R restart · x tear down · gr refresh\n\n"
-                        'face 'godel-board-dim))))
+                        'magit-section-heading)
+            (godel-board--paint "      n new · RET open · m message · R restart · x tear down · gr refresh\n\n"
+                        'godel-board-dim))))
 
 (defun godel-board--render ()
   (let* ((inhibit-read-only t)
@@ -257,10 +285,10 @@
           (let ((name (file-name-nondirectory (directory-file-name repo))))
             (magit-insert-heading
               (if godel-board--compact
-                  (propertize name 'face 'magit-section-heading)
-                (concat (propertize name 'face 'magit-section-heading) "  "
-                        (propertize (abbreviate-file-name (directory-file-name repo))
-                                    'face 'godel-board-dim)
+                  (godel-board--paint name 'magit-section-heading)
+                (concat (godel-board--paint name 'magit-section-heading) "  "
+                        (godel-board--paint (abbreviate-file-name (directory-file-name repo))
+                                    'godel-board-dim)
                         "    " (godel-board--counts rtasks)))))
           (if godel-board--compact
               (dolist (task (cl-stable-sort (copy-sequence rtasks) #'<
@@ -350,11 +378,26 @@
       (godel-board--refresh-buffer buffer))
     buffer))
 
+(defcustom godel-board-workspace "Godel"
+  "Name of the Doom workspace that holds the board."
+  :group 'godel
+  :type 'string)
+
 ;;;###autoload
 (defun godel-board ()
-  "Show the godel board."
+  "Show the board in its own workspace (`godel-board-workspace').
+The workspace is created on first use; afterwards this switches back to
+it.  Without Doom workspaces, the board opens in the selected window."
   (interactive)
-  (switch-to-buffer (godel-board-buffer)))
+  (let ((buffer (godel-board-buffer)))
+    (if (not (fboundp '+workspace-switch))
+        (switch-to-buffer buffer)
+      (+workspace-switch godel-board-workspace t)
+      (if-let* ((window (get-buffer-window buffer)))
+          (select-window window)
+        (select-window (window-main-window))
+        (delete-other-windows)
+        (switch-to-buffer buffer)))))
 
 ;;;; Commands
 

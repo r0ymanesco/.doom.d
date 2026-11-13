@@ -562,6 +562,73 @@ The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
           (godel-sidebar--remove)
           (when (get-buffer godel-sidebar-buffer-name) (kill-buffer godel-sidebar-buffer-name)))))))
 
+(ert-deftest godel-test-board-colours-survive-font-lock ()
+  "Icons keep their state colour after font-lock fontifies the board."
+  (godel-test-with-env
+    (godel-test-board-tasks tmp)
+    (with-current-buffer (godel-board-buffer)
+      (unwind-protect
+          (progn
+            (font-lock-mode 1)
+            (font-lock-ensure)
+            (dolist (case '(("●" . godel-state-needs-attention)
+                            ("◐" . godel-state-working)
+                            ("✓" . godel-state-needs-review)))
+              (goto-char (point-min))
+              ;; Skip the counts in the repo heading; find the task row's icon.
+              (re-search-forward (concat "^ +" (car case) " "))
+              (goto-char (match-beginning 0))
+              (skip-chars-forward " ")
+              ;; font-lock removes `face'; `font-lock-face' is what it displays.
+              (let ((face (get-text-property (point) 'font-lock-face)))
+                (should (eq (if (consp face) (car face) face) (cdr case))))))
+        (kill-buffer)))))
+
+(ert-deftest godel-test-state-faces-distinct ()
+  (let ((faces (mapcar (lambda (st) (let ((f (godel-board--state-face st))) (if (consp f) (car f) f)))
+                       godel-task-states)))
+    (should (equal (length (delete-dups (copy-sequence faces))) (length godel-task-states)))
+    (dolist (face faces) (should (facep face)))))
+
+(ert-deftest godel-test-state-colour-is-foreground-only ()
+  "The theme's ANSI colour is used as a foreground, never a background."
+  (cl-letf (((symbol-function 'face-foreground)
+             (lambda (face &rest _) (and (eq face 'ansi-color-yellow) "#ffff88"))))
+    (let ((face (godel-board--state-face 'working)))
+      (should (equal face '(godel-state-working (:foreground "#ffff88"))))
+      (should-not (plist-get (cadr face) :background))))
+  ;; No ANSI colour defined: just the face.
+  (cl-letf (((symbol-function 'face-foreground) (lambda (&rest _) nil)))
+    (should (eq (godel-board--state-face 'working) 'godel-state-working)))
+  (should (eq (godel-board--state-face 'stopped) 'godel-state-stopped)))
+
+(ert-deftest godel-test-board-workspace ()
+  (godel-test-with-env
+    (godel-test-board-tasks tmp)
+    (let (switched)
+      (cl-letf (((symbol-function '+workspace-switch)
+                 (lambda (name &optional create) (push (list name create) switched))))
+        (unwind-protect
+            (progn
+              (godel-board)
+              (should (equal switched '(("Godel" t))))
+              (should (eq (window-buffer (selected-window)) (get-buffer godel-board-buffer-name)))
+              ;; Again: same workspace, board window reused.
+              (godel-board)
+              (should (equal (car switched) '("Godel" t)))
+              (should (eq (window-buffer (selected-window)) (get-buffer godel-board-buffer-name))))
+          (kill-buffer godel-board-buffer-name))))))
+
+(ert-deftest godel-test-badge-has-state-face ()
+  (godel-test-with-env
+    (let* ((tasks (godel-test-board-tasks tmp))
+           (badge (godel-workspace-badge (plist-get (nth 1 tasks) :slug))))
+      (should (equal badge "●"))
+      (let ((f1 (get-text-property 0 'face badge))
+            (f2 (get-text-property 0 'face (godel-workspace-badge (plist-get (nth 0 tasks) :slug)))))
+        (should (eq (if (consp f1) (car f1) f1) 'godel-state-needs-attention))
+        (should (eq (if (consp f2) (car f2) f2) 'godel-state-working))))))
+
 (ert-deftest godel-test-reconcile-marks-dead-sessions-stopped ()
   (godel-test-with-env
     (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))

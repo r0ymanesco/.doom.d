@@ -79,20 +79,23 @@
   '(:eval (let ((a (godel--attention-count)) (r (godel--review-count)))
             (when (> (+ a r) 0)
               (concat " "
-                      (when (> a 0) (propertize (format "●%d" a) 'face 'godel-board-attention))
-                      (when (> r 0) (propertize (format "✓%d" r) 'face 'godel-board-review))
+                      (when (> a 0) (propertize (format "●%d" a) 'face 'godel-state-needs-attention))
+                      (when (> r 0) (propertize (format "✓%d" r) 'face 'godel-state-needs-review))
                       " "))))
   "Mode line construct showing tasks needing attention / review.")
 (put 'godel-mode-line 'risky-local-variable t)
 
 (defun godel-workspace-badge (name)
-  "Badge for the Doom workspace NAME if it belongs to a task, else \"\"."
-  (if-let* ((task (godel-task-by-slug name)))
-      (pcase (plist-get task :state)
-        ((or 'needs-attention 'model-mismatch) "●")
-        ('needs-review "✓")
-        ('working "◐")
-        (_ ""))
+  "Badge for the Doom workspace NAME if it belongs to a task, else \"\".
+The badge carries its state's face, for the tab bar to apply."
+  (if-let* ((task (godel-task-by-slug name))
+            (state (plist-get task :state))
+            (icon (pcase state
+                    ((or 'needs-attention 'model-mismatch) "●")
+                    ('needs-review "✓")
+                    ('working "◐")
+                    ('setting-up "…"))))
+      (propertize icon 'face (godel-board--state-face state))
     ""))
 
 ;;;; Startup
