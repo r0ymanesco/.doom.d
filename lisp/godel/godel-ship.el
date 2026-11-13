@@ -96,7 +96,7 @@ CALLBACK gets nil and an error message if drafting fails.  While it runs,
 `godel-ship-drafting' says since when."
   (let* ((default-directory (plist-get task :worktree))
          (stat (or (godel-task--git default-directory "status" "--short") ""))
-         (has-pr (plist-get task :pr-url))
+         (has-pr (godel-ship-open-pr task))
          (entry (or (godel-models-find (plist-get task :model)) (godel-models-find "notdiamond[1m]")))
          (launch (godel-models-launch-env entry (or (plist-get task :effort) godel-default-effort)))
          (resume (and (plist-get task :transcript) (plist-get task :session-id)))
@@ -215,10 +215,10 @@ nil, or an error message naming the step that failed."
          (changes (not (string-empty-p (or (godel-task--git (plist-get task :worktree)
                                                             "status" "--porcelain")
                                            ""))))
-         (open-pr (and (not (plist-get task :pr-url)) pr-title)))
+         (open-pr (and (not (godel-ship-open-pr task)) pr-title)))
     (when (and changes (not commit))
       (user-error "godel: there are uncommitted changes but no commit message"))
-    (when (and (not (plist-get task :pr-url)) (not pr-title))
+    (when (and (not (godel-ship-open-pr task)) (not pr-title))
       (user-error "godel: no PR title (the line after the separator)"))
     (with-temp-file msg-file (insert (or commit "") "\n"))
     (with-temp-file body-file (insert (or pr-body "") "\n"))
@@ -241,10 +241,16 @@ nil, or an error message naming the step that failed."
          (let ((url (and open-pr godel-ship--last-output
                          (string-match "https://[^ \t\n]+" godel-ship--last-output)
                          (match-string 0 godel-ship--last-output))))
-           (godel-task-update id :pr-url (or url (plist-get (godel-task-get id) :pr-url))
-                              :last-event (cond (url (concat "PR opened: " url))
-                                                (open-pr "pushed; PR created (no URL printed)")
-                                                (t "pushed")))
+           (apply #'godel-task-update id
+                  :last-event (cond (url (concat "PR opened: " url))
+                                    (open-pr "pushed; PR created (no URL printed)")
+                                    (t "pushed"))
+                  ;; A new PR replaces a closed or merged one; a merged task
+                  ;; is back under review.
+                  (when url
+                    `(:pr-url ,url :pr-state open
+                              ,@(when (eq (plist-get (godel-task-get id) :state) 'merged)
+                                  '(:state needs-review)))))
            (godel-ship--tell-author (godel-task-get id) (and changes commit) (and url t))
            (message "godel: %s %s" id (if url (concat "PR opened: " url) "pushed"))))))))
 
@@ -272,6 +278,19 @@ pushed commit, OPENED non-nil if this ship opened the PR."
                                  ""))))
       (godel-agent-send task (godel-ship-note task commit hash opened)))))
 
+(defun godel-ship-pr-state (task)
+  "TASK's PR state as godel last saw it: `open', `closed', `merged', or nil
+without a PR.  (Tasks shipped before godel kept the state count as open,
+or merged if the task is.)"
+  (when (plist-get task :pr-url)
+    (or (plist-get task :pr-state)
+        (if (eq (plist-get task :state) 'merged) 'merged 'open))))
+
+(defun godel-ship-open-pr (task)
+  "TASK's PR URL if that PR is still open, else nil.
+A ship with no open PR opens a new one."
+  (and (eq (godel-ship-pr-state task) 'open) (plist-get task :pr-url)))
+
 (defun godel-ship-pr-number (task)
   "TASK's PR number as a string, or nil."
   (when-let* ((url (plist-get task :pr-url)))
@@ -294,7 +313,7 @@ pushed commit, OPENED non-nil if this ship opened the PR."
   "Draft (with the author), edit, then commit, push and open a PR for TASK.
 The compose buffer opens at once and shows the drafting's progress."
   (let* ((id (plist-get task :id))
-         (has-pr (plist-get task :pr-url))
+         (has-pr (godel-ship-open-pr task))
          (what (if has-pr "commit message" "commit message and PR"))
          (title (format "Ship %s: commit message%s" id
                         (if has-pr (format ", then push to %s" has-pr)
@@ -330,19 +349,31 @@ The compose buffer opens at once and shows the drafting's progress."
 ;;;; Merged PRs
 
 (defun godel-ship-check-merged ()
-  "Ask gh about every open task PR; move merged ones to the `merged' state."
+  "Ask gh about every task PR that isn't merged; save its state (`:pr-state').
+Merged moves the task to the `merged' state; closed (without merging) and
+reopened are noted on the task."
   (interactive)
   (dolist (task (godel-task-all))
-    (when (and (plist-get task :pr-url) (not (eq (plist-get task :state) 'merged))
+    (when (and (memq (godel-ship-pr-state task) '(open closed))
                (executable-find godel-gh-program))
       (let ((id (plist-get task :id)))
         (godel-models--run
          godel-gh-program (list "pr" "view" (plist-get task :pr-url) "--json" "state")
          (lambda (_exit out)
-           (let ((state (ignore-errors
-                          (alist-get 'state (json-parse-string (string-trim out) :object-type 'alist)))))
-             (when (and (equal state "MERGED") (godel-task-get id))
-               (godel-task-update id :state 'merged :last-event "PR merged")))))))))
+           (let* ((gh (ignore-errors
+                        (alist-get 'state (json-parse-string (string-trim out) :object-type 'alist))))
+                  (state (pcase gh ("OPEN" 'open) ("CLOSED" 'closed) ("MERGED" 'merged)))
+                  (task (godel-task-get id))
+                  (was (and task (godel-ship-pr-state task))))
+             (when (and task state (not (eq state (plist-get task :pr-state))))
+               (pcase state
+                 ('merged (godel-task-update id :pr-state 'merged :state 'merged
+                                             :last-event "PR merged"))
+                 ('closed (godel-task-update id :pr-state 'closed
+                                             :last-event "PR closed without merging"))
+                 ('open (if (eq was 'closed)
+                            (godel-task-update id :pr-state 'open :last-event "PR reopened")
+                          (godel-task-update id :pr-state 'open))))))))))))
 
 (defvar godel-ship--timer nil)
 

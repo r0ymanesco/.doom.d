@@ -216,7 +216,7 @@ PROPS must include :title and :repo.  :id, :slug, :branch, :worktree,
 
 (defconst godel-task--quiet-props
   '(:review-status :review-started :review-activity :review-note :review-seen
-    :findings :finding-seq)
+    :findings :finding-seq :pr-state)
   "Properties whose changes don't count as the task being updated.
 The board's age column is the time since the agent or you last did
 something; an independent review's progress shouldn't reset it.")

@@ -32,6 +32,7 @@
 (declare-function godel-ship-browse-pr "godel-ship" (task))
 (declare-function godel-ship-pr-number "godel-ship" (task))
 (declare-function godel-ship-drafting "godel-ship" (task))
+(declare-function godel-ship-pr-state "godel-ship" (task))
 (declare-function godel-import-worktree "godel-new" (&optional repo))
 (declare-function godel-ship-check-merged "godel-ship" ())
 (declare-function godel-new--read-model "godel-new" (prompt initial history))
@@ -220,8 +221,12 @@ board) removes plain `face' properties when it fontifies."
     (plist-get (godel-task-by-slug (ignore-errors (+workspace-current-name))) :id)))
 
 (defun godel-board--pr-face (task)
-  "Face for TASK's PR marker: green while open, cyan once merged."
-  (godel-board--state-face (if (eq (plist-get task :state) 'merged) 'merged 'needs-review)))
+  "Face for TASK's PR marker: green while open, cyan once merged, red if
+closed without merging."
+  (godel-board--state-face (pcase (godel-ship-pr-state task)
+                             ('merged 'merged)
+                             ('closed 'needs-attention)
+                             (_ 'needs-review))))
 
 (defun godel-board--icon (task)
   (let ((state (plist-get task :state)))
@@ -237,7 +242,10 @@ board) removes plain `face' properties when it fontifies."
                                          (format "  (running %s)" a) "")))
                    ("changes" ,(plist-get task :diffstat))
                    ("PR" ,(when-let* ((url (plist-get task :pr-url)))
-                            (concat url (if (eq (plist-get task :state) 'merged) "  (merged)" "")
+                            (concat url (pcase (godel-ship-pr-state task)
+                                          ('merged "  (merged)")
+                                          ('closed "  (closed without merging)")
+                                          (_ ""))
                                     (if godel-board--compact "" "   gp opens it"))))
                    ("comments" ,(godel-board--comment-summary task))
                    ("review" ,(plist-get task :review-note))
@@ -436,8 +444,12 @@ findings, or a failed one: until the review list has been opened."
       (dolist (w windows) (set-window-point w (point))))))
 
 (defun godel-board-refresh ()
-  "Redraw the board and the sidebar."
+  "Redraw the board and the sidebar.
+Interactively (gr), also ask GitHub about the tasks' PRs; the board
+redraws again as their states come in."
   (interactive)
+  (when (and (called-interactively-p 'any) (fboundp 'godel-ship-check-merged))
+    (godel-ship-check-merged))
   (dolist (name (list godel-board-buffer-name godel-sidebar-buffer-name))
     (when-let* ((buffer (get-buffer name)))
       (godel-board--refresh-buffer buffer))))

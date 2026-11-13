@@ -789,16 +789,28 @@ so the task's state doesn't change. Default model: Not Diamond
    it can collide with what you're typing.)
 
 **Finding the PR:** the board row shows `#<number>` after the title (green,
-cyan once merged), the sidebar row a `⇡` in the same colours (next to the
+cyan once merged, red if closed without merging), the sidebar row a `⇡`
+in the same colours (next to the
 review badge, two columns taken from the title); `TAB` shows a `PR` line
 with the URL; `gp` on a board or sidebar row, or `o` in the review menu
 (`SPC G v`), opens it in the browser (`godel-ship-browse-pr`).
 
-**Merged:** `godel-ship-check-merged` runs `gh pr view <url> --json state`
-for tasks with a PR, when the board opens and every
-`godel-ship-check-interval` seconds (default 300) while `godel-mode` is on.
-A merged PR moves the task to **merged**. Merged tasks aren't torn down
-automatically.
+**PR state:** `godel-ship-check-merged` runs `gh pr view <url> --json
+state` for tasks whose PR isn't merged: when the board opens, on `gr`, and
+every `godel-ship-check-interval` seconds (default 300) while `godel-mode`
+is on. The state is saved as `:pr-state` (`open`, `closed`, `merged`).
+- **Merged** moves the task to **merged** (cyan). Merged tasks aren't torn
+  down automatically.
+- **Closed without merging** leaves the task's state alone, notes "PR
+  closed without merging", and draws the PR marker red (`#N` on the board,
+  `⇡` in the sidebar, "(closed without merging)" on the `PR` line).
+  Reopened on GitHub: "PR reopened", green again.
+- **One PR per task.** A task tracks the PR godel opened. Shipping again
+  pushes to the branch, which updates that PR while it's open. Once it's
+  closed or merged, `P` drafts a PR again and opens a new one, which
+  becomes the task's PR (a merged task goes back to needs-review). PRs
+  opened outside godel (github.com, or the author running `gh`) aren't
+  tracked.
 
 Tested against GitHub: a real ship opened a PR (also covered by tests
 with a local bare remote and a fake `gh`). Merged detection not yet seen

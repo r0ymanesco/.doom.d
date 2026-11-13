@@ -1367,6 +1367,62 @@ the author's (running) session what was shipped."
         (unwind-protect (should (godel-test-text-order-p "Merged (1)" "rev"))
           (kill-buffer))))))
 
+(ert-deftest godel-test-ship-check-closed ()
+  "A PR closed without merging is noted and drawn red; reopened, it's
+open again.  gr asks GitHub; a redraw on its own doesn't."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (fake (godel-test-fake-gh tmp "unused" "CLOSED"))
+           (godel-gh-program (car fake)))
+      (godel-task-update id :pr-url "https://github.com/me/repo/pull/7" :state 'needs-review)
+      (godel-board-refresh)             ; not interactive: no gh
+      (should-not (file-exists-p (cdr fake)))
+      (call-interactively #'godel-board-refresh)
+      (should (godel-test-wait (lambda () (eq (plist-get (godel-task-get id) :pr-state) 'closed)) 5))
+      (should (eq (plist-get (godel-task-get id) :state) 'needs-review))
+      (should (equal (plist-get (godel-task-get id) :last-event) "PR closed without merging"))
+      (should (eq (car (godel-board--pr-face (godel-task-get id))) 'godel-state-needs-attention))
+      (should-not (godel-ship-open-pr (godel-task-get id)))
+      (with-temp-buffer
+        (godel-board--details (godel-task-get id) 8)
+        (should (string-match-p "pull/7  (closed without merging)" (buffer-string))))
+      ;; Reopened on GitHub.
+      (setq godel-gh-program (car (godel-test-fake-gh tmp "unused" "OPEN")))
+      (godel-ship-check-merged)
+      (should (godel-test-wait (lambda () (eq (plist-get (godel-task-get id) :pr-state) 'open)) 5))
+      (should (equal (plist-get (godel-task-get id) :last-event) "PR reopened"))
+      (should (eq (car (godel-board--pr-face (godel-task-get id))) 'godel-state-needs-review)))))
+
+(ert-deftest godel-test-ship-after-closed-pr-opens-new ()
+  "With the task's PR closed (or merged), shipping opens a new PR, which
+becomes the task's PR; a merged task goes back to needs-review."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (remote (expand-file-name "remote.git" tmp))
+           (fake (godel-test-fake-gh tmp "https://github.com/me/repo/pull/9" "OPEN"))
+           (godel-gh-program (car fake))
+           (done (lambda () (string-match-p "\\`\\(pushed\\|PR opened\\|.*failed\\)"
+                                            (or (plist-get (godel-task-get id) :last-event) "")))))
+      (call-process "git" nil nil nil "init" "-q" "--bare" remote)
+      (let ((default-directory (plist-get task :repo)))
+        (call-process "git" nil nil nil "remote" "add" "origin" remote))
+      (let ((default-directory (plist-get task :worktree)))
+        (call-process "git" nil nil nil "config" "user.email" "t@t")
+        (call-process "git" nil nil nil "config" "user.name" "t"))
+      (godel-task-update id :pr-url "https://github.com/me/repo/pull/7" :pr-state 'merged
+                         :state 'merged :last-event "")
+      (godel-ship-execute (godel-task-get id) "Follow-up" "Follow-up PR" "Body")
+      (should (godel-test-wait done 20))
+      (let ((task (godel-task-get id)))
+        (should (equal (plist-get task :pr-url) "https://github.com/me/repo/pull/9"))
+        (should (eq (plist-get task :pr-state) 'open))
+        (should (eq (plist-get task :state) 'needs-review)))
+      (with-temp-buffer
+        (insert-file-contents (cdr fake))
+        (should (string-match-p "pr create" (buffer-string)))))))
+
 (ert-deftest godel-test-import-worktree ()
   (godel-test-with-env
     (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
