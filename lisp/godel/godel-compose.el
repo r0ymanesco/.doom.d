@@ -10,6 +10,10 @@
 ;; Each buffer visits a draft file under <git-common-dir>/godel/drafts/, so
 ;; nothing is lost if Emacs crashes.  A cancelled draft is kept and offered
 ;; again next time.
+;;
+;; A buffer can open before its text is ready (ship's draft comes from the
+;; author): `godel-compose-wait' shows a status in place of the text and
+;; makes the buffer read-only, `godel-compose-fill' puts the text in.
 
 ;;; Code:
 
@@ -23,6 +27,8 @@
   "Function called with the buffer's text on submit.")
 (defvar-local godel-compose--kind nil)
 (defvar-local godel-compose--repo nil)
+(defvar-local godel-compose--waiting nil
+  "Overlay showing what the buffer is waiting for, while its text isn't ready.")
 
 (defconst godel-compose-restorable-kinds '(task)
   "Kinds whose cancelled drafts are offered again next time.")
@@ -40,6 +46,8 @@
 (defun godel-compose-submit ()
   "Submit this buffer's text."
   (interactive)
+  (when godel-compose--waiting
+    (user-error "godel: not ready yet; :q! to cancel"))
   (let ((text (godel-compose--text))
         (callback godel-compose--callback)
         (file buffer-file-name))
@@ -85,6 +93,46 @@
   (expand-file-name (format "%s-%s.md" kind (format-time-string "%Y%m%d-%H%M%S"))
                     (expand-file-name "drafts" (godel-task-store-dir repo))))
 
+(defun godel-compose--header (header)
+  (concat " " header "   "
+          (substitute-command-keys
+           "\\<godel-compose-keys-mode-map>:wq or \\[godel-compose-submit] submit · :q! or \\[godel-compose-cancel] cancel")))
+
+(defface godel-compose-waiting '((t :inherit warning :height 1.2))
+  "Status shown in a compose buffer whose text isn't ready yet."
+  :group 'godel)
+
+(defun godel-compose-wait (buffer status)
+  "Show STATUS in BUFFER in place of its text, which isn't ready yet.
+The buffer is read-only and can't be submitted until `godel-compose-fill';
+call again to update STATUS."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (unless godel-compose--waiting
+        (setq godel-compose--waiting (make-overlay (point-min) (point-min) nil nil nil))
+        (setq buffer-read-only t)
+        (when (fboundp 'evil-normal-state)
+          (dolist (w (get-buffer-window-list buffer nil t))
+            (with-selected-window w (evil-normal-state)))))
+      (overlay-put godel-compose--waiting 'before-string
+                   (concat "\n  " (propertize status 'face 'godel-compose-waiting) "\n")))))
+
+(defun godel-compose-fill (buffer text &optional header)
+  "End BUFFER's wait: insert TEXT, make it editable, set HEADER if given."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when godel-compose--waiting
+        (delete-overlay godel-compose--waiting)
+        (setq godel-compose--waiting nil))
+      (setq buffer-read-only nil)
+      (when (zerop (buffer-size)) (insert text))
+      (when header (setq header-line-format (godel-compose--header header)))
+      (set-buffer-modified-p nil)
+      (dolist (w (get-buffer-window-list buffer nil t))
+        (set-window-point w (point-min))
+        (when (and (eq w (selected-window)) (fboundp 'evil-insert-state))
+          (with-selected-window w (goto-char (point-min)) (evil-insert-state)))))))
+
 (defun godel-compose (repo kind header callback &optional initial quote)
   "Open a compose buffer for KIND (a symbol) in REPO.
 HEADER is shown in the header line.  CALLBACK gets the text on submit.
@@ -112,10 +160,7 @@ INITIAL is inserted.  QUOTE, if non-nil, is displayed above the text
         (setq godel-compose--callback callback
               godel-compose--kind kind
               godel-compose--repo repo
-              header-line-format
-              (concat " " header "   "
-                      (substitute-command-keys
-                       "\\<godel-compose-keys-mode-map>:wq or \\[godel-compose-submit] submit · :q! or \\[godel-compose-cancel] cancel")))
+              header-line-format (godel-compose--header header))
         (when (and initial (not restore) (zerop (buffer-size)))
           (insert initial))
         (when quote

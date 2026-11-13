@@ -252,13 +252,18 @@ board) removes plain `face' properties when it fontifies."
 
 (defun godel-board--review-badge (task)
   "(ICON TEXT FACE) for TASK's independent review, or nil if nothing to show.
+A ship draft in progress (`godel-ship-drafting') shows instead.
 Running: the elapsed time and what the reviewer is doing.  Findings
 waiting to be accepted or dropped: their count.  A finished review with no
 findings, or a failed one: until the review list has been opened."
   (let ((status (plist-get task :review-status))
         (proposed (cl-count 'proposed (plist-get task :findings)
-                            :key (lambda (f) (plist-get f :state)))))
+                            :key (lambda (f) (plist-get f :state))))
+        (drafting (and (fboundp 'godel-ship-drafting) (godel-ship-drafting task))))
     (cond
+     (drafting
+      (list "⟳" (concat "drafting the ship message " (godel-board--age drafting))
+            (godel-board--state-face 'setting-up)))
      ((eq status 'running)
       (list "⟳" (concat "reviewing "
                         (godel-board--age (plist-get task :review-started))

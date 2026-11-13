@@ -757,6 +757,16 @@ so the task's state doesn't change. Default model: Not Diamond
    so the live session is untouched and nothing is saved. A task whose
    session never started gets a draft from the diff alone. If drafting
    fails, you get an empty draft and the reason in the header.
+   - **Progress.** The compose buffer opens at once (`P` doesn't leave you
+     waiting on the echo area): until the draft arrives it shows "⟳ The
+     author is drafting the commit message and PR… 12s", is read-only and
+     refuses `:wq` (`godel-compose-wait`; `godel-compose-fill` puts the
+     draft in and switches to insert state). The board row shows "⟳
+     drafting the ship message 12s" in the badge column. A notification
+     says when the draft is ready. `:q!` while drafting stops the Claude
+     run. The drafting table (`godel-ship--drafting`) lives only in memory,
+     so a restart can't leave a stuck badge. Tested live: a real draft took
+     ~20s.
 2. **Edit.** A compose buffer with the commit message on top, then the line
    `==== Pull request: title on the next line, then the description ====`,
    then the PR title and description. If the task already has a PR, only

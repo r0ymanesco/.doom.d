@@ -10,7 +10,10 @@
 ;;      live session is untouched.  A task whose session never started gets
 ;;      a draft from the diff alone.
 ;;   2. You edit the draft in a compose buffer: the commit message on top,
-;;      then a separator line, then the PR title and description.
+;;      then a separator line, then the PR title and description.  The
+;;      buffer opens at once and shows the drafting's progress (elapsed time)
+;;      until the draft arrives; the board row shows it too.  Cancelling
+;;      (:q!) while it drafts stops the draft.
 ;;   3. `:wq' commits (if there are changes), pushes, and opens the PR with
 ;;      `gh'.  The PR URL is saved on the task.  If the task already has a
 ;;      PR, only the commit message is drafted and the push updates the PR.
@@ -75,9 +78,18 @@
       (error "The author couldn't draft it: %s" result))
     (list (funcall part "commit") (funcall part "pr-title") (funcall part "pr-body"))))
 
+(defvar godel-ship--drafting (make-hash-table :test #'equal)
+  "Task ID -> (START . PROCESS) for drafts in progress.
+Only in memory: a draft doesn't survive a restart, so neither does this.")
+
+(defun godel-ship-drafting (task)
+  "When TASK's ship draft is in progress, the time it started."
+  (car (gethash (plist-get task :id) godel-ship--drafting)))
+
 (defun godel-ship-draft (task callback)
   "Ask TASK's author for a draft; call CALLBACK with (COMMIT PR-TITLE PR-BODY).
-CALLBACK gets nil and an error message if drafting fails."
+CALLBACK gets nil and an error message if drafting fails.  While it runs,
+`godel-ship-drafting' says since when."
   (let* ((default-directory (plist-get task :worktree))
          (stat (or (godel-task--git default-directory "status" "--short") ""))
          (has-pr (plist-get task :pr-url))
@@ -95,23 +107,38 @@ CALLBACK gets nil and an error message if drafting fails."
                                                      (or (godel-review-merge-base task) "HEAD")))
                                      (buffer-string))
                                    "```\n")))))
+    (puthash (plist-get task :id) (list (float-time)) godel-ship--drafting)
+    (setq callback (let ((id (plist-get task :id)) (callback callback))
+                     (lambda (&rest args)
+                       (when (gethash id godel-ship--drafting)
+                         (remhash id godel-ship--drafting)
+                         (apply callback args)))))
     (godel-models-ensure-proxy
      (lambda (ok &optional err)
        (if (not ok)
            (funcall callback nil (or err "proxy check failed"))
-         (let ((default-directory (plist-get task :worktree)))
-           (godel-models--run
-            godel-claude-program
-            (append '("-p" "--output-format" "json" "--no-session-persistence"
-                      "--disallowedTools" "Edit,Write,MultiEdit,NotebookEdit,Bash")
-                    (when resume (list "--resume" resume "--fork-session"))
-                    (plist-get launch :args))
-            (lambda (_exit output)
-              (condition-case e
-                  (funcall callback (godel-ship-parse-draft output))
-                (error (funcall callback nil (error-message-string e)))))
-            prompt
-            (cons "GODEL_SERVER" (plist-get launch :env)))))))))
+         (let ((default-directory (plist-get task :worktree))
+               (entry (gethash (plist-get task :id) godel-ship--drafting)))
+           (when entry
+             (setcdr entry
+                     (godel-models--run
+                      godel-claude-program
+                      (append '("-p" "--output-format" "json" "--no-session-persistence"
+                                "--disallowedTools" "Edit,Write,MultiEdit,NotebookEdit,Bash")
+                              (when resume (list "--resume" resume "--fork-session"))
+                              (plist-get launch :args))
+                      (lambda (_exit output)
+                        (condition-case e
+                            (funcall callback (godel-ship-parse-draft output))
+                          (error (funcall callback nil (error-message-string e)))))
+                      prompt
+                      (cons "GODEL_SERVER" (plist-get launch :env)))))))))))
+
+(defun godel-ship-cancel-draft (id)
+  "Stop task ID's ship draft, if one is running; its callback isn't called."
+  (when-let* ((entry (gethash id godel-ship--drafting)))
+    (remhash id godel-ship--drafting)
+    (when (process-live-p (cdr entry)) (delete-process (cdr entry)))))
 
 (defun godel-ship-draft-text (draft has-pr)
   "The compose text for DRAFT (COMMIT PR-TITLE PR-BODY)."
@@ -217,25 +244,48 @@ nil, or an error message naming the step that failed."
            (message "godel: %s %s" id (if url (concat "PR opened: " url) "pushed"))))))))
 
 ;;;###autoload
+(declare-function godel-board--schedule "godel-board" (&rest _))
+
+(defun godel-ship--wait-status (what start)
+  (format "⟳ The author is drafting the %s… %ds\n\n  It appears here when it's ready.  :q! cancels."
+          what (round (- (float-time) start))))
+
 (defun godel-ship (task)
-  "Draft (with the author), edit, then commit, push and open a PR for TASK."
-  (let ((id (plist-get task :id))
-        (has-pr (plist-get task :pr-url)))
-    (message "godel: asking the author of %s for a %s draft…" id
-             (if has-pr "commit message" "commit message and PR"))
+  "Draft (with the author), edit, then commit, push and open a PR for TASK.
+The compose buffer opens at once and shows the drafting's progress."
+  (let* ((id (plist-get task :id))
+         (has-pr (plist-get task :pr-url))
+         (what (if has-pr "commit message" "commit message and PR"))
+         (title (format "Ship %s: commit message%s" id
+                        (if has-pr (format ", then push to %s" has-pr)
+                          ", then the PR below the separator")))
+         (buffer (godel-compose
+                  (plist-get task :repo) 'ship (concat title "   (drafting…)")
+                  (lambda (text)
+                    (pcase-let ((`(,commit ,title ,body) (godel-ship-split text)))
+                      (godel-ship-execute (godel-task-get id) commit title body)))))
+         (start (float-time))
+         (timer nil))
+    (godel-compose-wait buffer (godel-ship--wait-status what start))
+    ;; Each second: the elapsed time in the buffer and on the board.
+    (setq timer (run-with-timer
+                 1 1 (lambda ()
+                       (if (not (buffer-live-p buffer))
+                           (progn (cancel-timer timer) (godel-ship-cancel-draft id)
+                                  (when (fboundp 'godel-board--schedule) (godel-board--schedule)))
+                         (godel-compose-wait buffer (godel-ship--wait-status what start))
+                         (when (fboundp 'godel-board--schedule) (godel-board--schedule))))))
     (godel-ship-draft
      task
      (lambda (draft &optional err)
-       (let ((task (godel-task-get id)))
-         (godel-compose
-          (plist-get task :repo) 'ship
-          (format "Ship %s: commit message%s   (%s)" id
-                  (if has-pr (format ", then push to %s" has-pr) ", then the PR below the separator")
-                  (if draft "drafted by the author" (format "no draft: %s" err)))
-          (lambda (text)
-            (pcase-let ((`(,commit ,title ,body) (godel-ship-split text)))
-              (godel-ship-execute (godel-task-get id) commit title body)))
-          (godel-ship-draft-text (or draft '(nil nil nil)) has-pr)))))))
+       (cancel-timer timer)
+       (when (fboundp 'godel-board--schedule) (godel-board--schedule))
+       (godel-compose-fill buffer (godel-ship-draft-text (or draft '(nil nil nil)) has-pr)
+                           (format "%s   (%s)" title
+                                   (if draft "drafted by the author" (format "no draft: %s" err))))
+       (godel-notify (format "godel: the %s draft for %s is ready" what id)
+                     (if draft "Edit it, then :wq to ship" (format "No draft: %s" err)))))
+    buffer))
 
 ;;;; Merged PRs
 

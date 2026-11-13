@@ -1204,6 +1204,62 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (should-not (member "--resume" (plist-get ran :args)))
         (should (string-match-p "return 20" (plist-get ran :input)))))))
 
+(ert-deftest godel-test-ship-shows-drafting ()
+  "The compose buffer opens at once, waiting (read-only, can't submit),
+the board badge shows the draft; the draft then fills the buffer in."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           finish buffer)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-models--run)
+                 (lambda (_program _args callback &rest _)
+                   (setq finish callback)
+                   (start-process "godel-test-sleep" nil "sleep" "30")))
+                ((symbol-function 'godel-notify) #'ignore))
+        (unwind-protect
+            (progn
+              (setq buffer (godel-ship (godel-task-get id)))
+              (with-current-buffer buffer
+                (should buffer-read-only)
+                (should (string-match-p "drafting the commit message and PR"
+                                        (overlay-get godel-compose--waiting 'before-string)))
+                (should-error (godel-compose-submit) :type 'user-error))
+              (should (godel-ship-drafting (godel-task-get id)))
+              (should (string-prefix-p "drafting the ship message"
+                                       (cadr (godel-board--review-badge (godel-task-get id)))))
+              (funcall finish 0 "{\"type\":\"result\",\"is_error\":false,\"result\":\"<commit>Subject</commit><pr-title>T</pr-title><pr-body>B</pr-body>\"}")
+              (should-not (godel-ship-drafting (godel-task-get id)))
+              (should-not (godel-board--review-badge (godel-task-get id)))
+              (with-current-buffer buffer
+                (should-not buffer-read-only)
+                (should-not godel-compose--waiting)
+                (should (string-prefix-p "Subject\n" (buffer-string)))
+                (should (string-match-p "drafted by the author" (format "%s" header-line-format)))))
+          (when (buffer-live-p buffer)
+            (let ((kill-buffer-query-functions nil)) (kill-buffer buffer)))
+          (godel-ship-cancel-draft id))))))
+
+(ert-deftest godel-test-ship-cancel-stops-draft ()
+  "Cancelling while the draft runs stops the Claude process; its result is
+dropped."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           proc finish called)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-models--run)
+                 (lambda (_program _args callback &rest _)
+                   (setq finish callback
+                         proc (start-process "godel-test-sleep" nil "sleep" "30")))))
+        (godel-ship-draft (godel-task-get id) (lambda (&rest _) (setq called t)))
+        (should (process-live-p proc))
+        (godel-ship-cancel-draft id)
+        (should-not (process-live-p proc))
+        (should-not (godel-ship-drafting (godel-task-get id)))
+        (funcall finish 0 "{}")
+        (should-not called)))))
+
 (defun godel-test-fake-gh (dir url state)
   "A fake gh in DIR: pr create prints URL and logs its args; pr view prints STATE."
   (let ((gh (expand-file-name "gh" dir)) (log (expand-file-name "gh.log" dir)))
