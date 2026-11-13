@@ -1,8 +1,25 @@
 # godel: an agent development environment for Emacs
 
-Status: Phase 0 (spike) done 2026-11-11, findings in `SPIKE.md`. Phase 1
-(MVP) built 2026-11-12; see "Phase 1: what was built" under Phases. Written
-2026-11-10.
+Status (2026-11-13): Phase 0 (spike) done, findings in `SPIKE.md`. Phase 1
+(MVP), Phase 1.1 (board by repo, sidebar) and Phase 2 (review and ship)
+built; the sections below describe what is built, and "Not built" notes mark
+what isn't yet. Phases 3 and 4 are planned. Written 2026-11-10.
+
+Keys at a glance:
+
+| Where | Key | Action |
+|---|---|---|
+| Anywhere | `SPC G a` | Board, in its own "Godel" workspace |
+| Anywhere | `SPC G n` | New task |
+| Anywhere | `SPC G o` | Toggle the sidebar |
+| Anywhere | `SPC G i` | Import an existing worktree as a task |
+| Anywhere | `SPC G M` | Refresh the model list (and re-check the model pin) |
+| Task diff or file | `SPC G c` | Comment on the line or region |
+| Task diff or file | `SPC G v` | Review menu for that task |
+| Board / sidebar | see Board | `RET` `TAB` `n` `m` `R` `x` `d` `v` `P` `i` `gr` `q` |
+| Task diff | `C`, `gn` / `gp` | Comment; next / previous comment |
+| Review list | `RET` `C` `x` `a` `s` | Visit, edit, delete/drop, accept finding, send |
+| Compose buffer | `:wq` / `:q!` | Submit / cancel |
 
 ## What it is
 
@@ -31,8 +48,12 @@ hooks, the board, and the review loop.
 | Model choice | Chosen per task from the list Claude reports through the SDK `initialize` request. Applied at launch with the wrapper's model pin (env vars), never with `/model X` or `/effort X`, which save the user's default. The pin is checked when the wrapper updates (`godel-models-check-pin`); there is no TUI fallback |
 | Paradev | Fully separate: do not read `.paradev/` config or import Paradev worktrees |
 | Name / prefix | `godel` / `godel-`, code in `lisp/godel/` |
-| Comment key in diffs | `C`, only inside godel task diffs |
+| Comment keys in diffs | `C` comment, `gn` / `gp` next / previous, only inside godel task diffs (`]c` / `[c` are taken by evil-collection's magit `]` / `[`) |
 | Leader prefix | `SPC G` (`SPC g` stays git) |
+| Board keys | Teardown is `x`, refresh `gr` (`k` is evil's "up") |
+| Diff scope | Working tree, uncommitted and untracked changes included, against the merge base with the task's base branch |
+| Reviewer | Not Diamond by default, model selectable; reviewers never report as the task |
+| Ship | The author drafts the commit message and PR from a fork of its session; you edit; godel commits, pushes, runs `gh pr create` |
 
 ## Core rules
 
@@ -82,23 +103,50 @@ lisp/godel/
   bar badges (in `my/tab-bar-workspaces`), the modeline segment and the
   `SPC G` prefix. It is a minor mode because godel works across buffers that
   have their own major modes (ghostel, magit, source files).
-- **Major modes for godel's own buffers:** `godel-board-mode`,
-  `godel-compose-mode`, `godel-review-mode`.
-- **`godel-diff-comment-mode`**: a minor mode turned on in diff buffers that
-  belong to a task.
+- **Major modes for godel's own buffers:** `godel-board-mode` (the board
+  and the sidebar, `godel-board--compact`), `godel-compose-mode` (text
+  entry), `godel-review-mode` (a task's findings and comments).
+- **`godel-comment-mode`**: shows a task's review comments under their
+  lines, in task diffs and in files inside a task's worktree (turned on by
+  `find-file-hook`). No keys.
+- **`godel-diff-comment-mode`**: on in task diffs only; adds `C`, `gn`,
+  `gp`. Its keymaps are evil intercept maps, and magit's `C` binding in
+  `magit-diff-section-map` is made conditional (see Review), because magit
+  puts section keymaps on the diff text, which beat every other keymap.
 
 ### Task model
 
 ```elisp
-(:id "fix-auth-a1b2" :title "Fix auth token refresh"
- :repo "~/code/foo" :base "master" :branch "godel/fix-auth-a1b2"
- :worktree "~/.godel/worktrees/foo/fix-auth-a1b2"
- :group nil                       ; fan-out group ID, if any
- :model "opus" :effort "high" :permission-mode "default"
- :session-id "<uuid>"             ; chosen by godel, passed with --session-id
- :state working :last-event "..." :created ... :pr-url nil
- :comments (...))                 ; review comments (see Review)
+(:id "fix-auth-a1b2" :slug "fix-auth-a1b2"     ; slug = workspace name
+ :title "Fix auth token refresh" :prompt "the original prompt"
+ :repo "~/code/foo/" :base "master" :branch "godel/fix-auth-a1b2"
+ :worktree "~/.godel/worktrees/foo/fix-auth-a1b2/"
+ :model "notdiamond[1m]" :effort "high" :permission-mode nil
+ ;; session
+ :session-id "<uuid>"            ; chosen by godel (--session-id), updated on resume
+ :transcript "/path.jsonl"       ; from SessionStart; "has started" for resume
+ :pending-prompt nil             ; sent once the session is ready
+ :expect-model "notdiamond[1m]" :pinned nil :model-actual "notdiamond[1m]"
+ :model-check-pending nil :resume-state nil
+ ;; state shown on the board
+ :state needs-review :last-event "..." :last-tool "Bash(npm test)"
+ :last-message "..." :diffstat "2 files changed, 1 untracked"
+ :created 1794... :updated 1794...
+ ;; review (Phase 2)
+ :comments ((:id 1 :file "app.py" :start 4 :end 5 :anchor "the lines' text"
+             :text "Why 20?" :state pending :round nil :created ...))
+ :comment-seq 1
+ :findings ((:id 1 :file "app.py" :start 5 :end 5 :severity "high"
+             :text "..." :state proposed :created ...))   ; proposed|accepted|dropped
+ :finding-seq 1 :review-status done :review-note "1 finding"
+ :review-rounds ((:round 1 :time ... :text "the feedback sent"))
+ ;; ship
+ :pr-url "https://github.com/.../pull/7")
 ```
+
+States: `setting-up`, `needs-attention`, `model-mismatch`, `working`,
+`needs-review`, `idle`, `stopped`, `merged`. Not built: `:group` (fan-out,
+Phase 4).
 
 Stored per repo in `$(git rev-parse --git-common-dir)/godel/tasks.eld`. Every
 worktree shares that directory and git never commits it. Drafts go in
@@ -119,11 +167,12 @@ report back. `bin/godel-hook EVENT` reads the hook JSON on stdin and calls
 | `UserPromptSubmit` | **working** |
 | `PreToolUse` | **working**; `tool_name` + `tool_input` kept as the row's last activity |
 | `Notification` | **needs-attention**; `notification_type` (e.g. `permission_prompt`) + `message`, shown with the last `PreToolUse` ("permission: Bash(touch …)") |
-| `Stop` | **needs-review** if there is a diff vs base, otherwise **idle**; `last_assistant_message` shown on the row; sent comments become *addressed* |
+| `Stop` | **needs-review** if there is a diff vs base, otherwise **idle**; `last_assistant_message` shown on the row; runs `godel-status-stop-functions` (review comments that were *sent* become *addressed*) |
 | `SessionEnd` | **stopped**; `reason` |
 | `PreModelSwitch` | confirms a model switch: `from_model`, `to_model`, `source` |
 
-Other states: **setting-up** (worktree and setup script running), **merged**.
+Other states: **setting-up** (worktree and setup script running),
+**merged** (set when `gh` reports the task's PR merged; see Ship).
 
 **Notifications that aren't requests.** Claude sends a `Notification` with
 "Claude is waiting for your input" (`idle_prompt`) about a minute after a
@@ -391,8 +440,27 @@ godel · 5 tasks in 2 repos      n new · RET open · m message · R restart · 
       ○ Bump deps                Not Diamond    Done.                           2h
 ```
 
-`TAB` on a repo heading collapses it (remembered across refreshes). `n` on a
-repo heading creates a task in that repo; on a task, in the task's repo.
+Keys (the same in the sidebar):
+
+| Key | Action |
+|---|---|
+| `RET` | Open the task's workspace (created if needed): magit-status of the worktree in the main window, Claude on the right. If the session isn't running, it's resumed (see Status from hooks). |
+| `TAB` | Expand a task (id, branch, worktree, model, changes, comments, review, last message, session) or collapse a repo |
+| `n` | New task, in the repo at point (task or repo heading) |
+| `m` | Message the agent from the minibuffer |
+| `R` | Restart or resume the session, asking for model and effort (refused while the task is still starting) |
+| `x` | Tear down: warn about uncommitted or unpushed work, stop the session, close the workspace, run the teardown script, remove the worktree, keep the branch, forget the task |
+| `d` | The task's diff with comments (see Review) |
+| `v` | Review menu (see Review) |
+| `P` | Ship (see Ship) |
+| `i` | Import an existing worktree of the repo at point |
+| `gr` | Refresh |
+| `q` | Quit the board; in the sidebar, hide the sidebar |
+
+`TAB` on a repo heading collapses it (remembered across refreshes).
+
+Not built: `F` fan-out, the group keys `c` / `w` / `J` (Phase 4), and a
+`/` filter.
 
 **The board has its own workspace.** `SPC G a` switches to a Doom workspace
 named **Godel** (`godel-board-workspace`), creating it with the board on
@@ -411,6 +479,7 @@ the reason text, and the tab-bar badges:
 | ✓ | Needs review | green |
 | ○ | Idle | normal text colour |
 | ■ | Stopped | grey |
+| ◆ | Merged | cyan |
 
 The colours are the *foreground* of the theme's `ansi-color-*` faces, so they
 follow the theme (only the foreground: those faces also set a background).
@@ -446,35 +515,26 @@ that need you get a second line with the reason.
 - Left side window, kept by `delete-other-windows`, in its own slot so it can
   share the left side with Treemacs. Claude stays on the right.
 
-| Key | Action |
-|---|---|
-| `n` | New task (see below) |
-| `F` | Fan-out: the same flow, with attempts > 1 |
-| `RET` | Open the task's workspace (created if needed): Claude on the right, magit-status of the worktree on the left |
-| `TAB` | Expand the row: last hook message, diffstat vs base, model/effort, age |
-| `m` | Quick reply to the agent from the minibuffer |
-| `d` | Diff vs base (`magit-diff-range base...branch`) with comment mode on |
-| `v` | Review transient (see Review) |
-| `R` | Restart or resume, optionally with a new model/effort |
-| `P` | Ship transient: commit, push, `gh pr create`; the PR URL is saved |
-| `x` | Teardown: warn about uncommitted or unpushed work, stop the session, remove the worktree, close the workspace, keep the branch, forget the task. (`x`, not `k`: `k` is "up" in evil.) |
-| `gr` / `/` | Refresh (evil-collection convention) / filter by repo or state |
-| `q` | Quit the board |
-| Group: `c` / `w` / `J` | Compare attempts / pick a winner (tear down the rest) / ask a judge session |
-
 ### New task (`n`)
 
-1. **Transient** with defaults filled in: `-b` base, `-m` model, `-e` effort,
-   `-p` permission mode, `-n` attempts. Actions: `c` compose, `RET` quick
-   prompt in the minibuffer.
-2. **Compose buffer** (`godel-compose-mode`, markdown). The first line is the
-   title and becomes the branch slug. The rest is the prompt, with file
-   completion for `@` mentions.
-3. On submit everything runs asynchronously and you **stay on the board**:
+1. **Transient** (`godel-new-task-menu`) with defaults filled in: `-b` base
+   (completion over the repo's branches), `-m` model (names and
+   descriptions, like `/model`), `-e` effort (the model's supported levels;
+   greyed out for Not Diamond, re-checked after every change with
+   `:refresh-suffixes`), `-p` permission mode. Actions: `c` compose, `RET`
+   quick prompt in the minibuffer.
+2. **Compose buffer**. The first line is the title (it becomes the branch
+   slug); the rest is the prompt. With only one line, it's both. The prompt
+   is saved on the task (`:prompt`) for reviewers.
+3. On submit everything runs asynchronously and you **stay where you are**:
    the task shows as *setting-up*, then `git worktree add -b godel/<slug>`,
-   then the setup script, then Claude starts on the chosen model and receives
-   the prompt (see Model and effort), and the task becomes *working*. With attempts > 1, the same steps run once per attempt,
-   creating a group.
+   then the setup script, then the proxy guard, then Claude starts on the
+   chosen model, the trust dialog is answered if Claude shows one (after
+   asking you), the model is checked, and the prompt is sent; the task
+   becomes *working*.
+
+Not built: `-n` attempts (fan-out, Phase 4) and file completion for `@`
+mentions in the compose buffer.
 
 ### Compose buffers: submit and cancel
 
@@ -491,63 +551,167 @@ the ex commands, as with-editor does (verified in Phase 0):
 
 As in magit, `:q` always cancels, even after `:w`.
 
-Each buffer visits a draft file under `.../godel/drafts/` and is auto-saved,
-so nothing is lost if Emacs crashes. The compose mode derives from
-`markdown-mode` but doesn't run the user's `markdown-mode-hook` (inline
+Each buffer visits a draft file under `.../godel/drafts/` (opened without
+file-type detection, so the user's `markdown-mode-hook` doesn't run) and is
+auto-saved, so nothing is lost if Emacs crashes. The compose mode derives
+from `markdown-mode` but doesn't run `markdown-mode-hook` either (inline
 images and markup hiding don't suit a draft, and images fail in a terminal
-frame). Cancelled drafts are kept, and the next
-`n` asks whether to restore the last one.
+frame). A cancelled task prompt is kept and the next `n` offers to restore
+it; other kinds (comments, questions, feedback, ship drafts) aren't offered
+again.
+
+Kinds: `task`, `comment`, `question`, `feedback`, `ship`. A comment or
+question shows the code it's about **above** the text, as an overlay: it
+can't be edited and isn't saved in the draft or submitted. (Read-only text
+didn't work: markdown's fontification dropped the property that keeps the
+end of it insertable.)
 
 ## Review
 
-### Comments in diffs
+Code: `godel-review.el` (diffs, comments, review list, feedback, ask the
+author), `godel-reviewer.el` (independent reviewer), `godel-ship.el`.
 
-- `godel-diff-comment-mode` is on in every task diff (`d` and the review
-  menu). The same command also works in file buffers inside a task worktree.
-- **`C`** on a line, or on a visual selection, adds a comment. In task diffs
-  this overrides magit's `C` (`magit-commit-add-log`), which a review diff
-  doesn't need. magit maps the diff line to the real file and line, so the
-  comment is tied to `file:line-range`.
-- A popup opens with the quoted lines read-only at the top and markdown
-  underneath. Submit and cancel work as in compose buffers.
-- The comment then shows in the diff as a fringe marker plus a box under the
-  line. `]c` / `[c` move between comments. `C` on a line that already has a
-  comment edits it; `D` on it deletes it.
-- Comments are saved on the task, so they survive restarts. Each comment
-  keeps the line text so it can be found again after the agent changes the
-  file. If it can't be found, the comment is marked **outdated**.
-- Comment states: pending -> sent -> addressed (after the agent's next
-  `Stop`), or outdated.
+### The review menu (`v` on the board, `SPC G v` in a task's diff or files)
 
-### Agent reviewers
+| Key | Action |
+|---|---|
+| `d` | Diff with comments |
+| `l` | Review list (findings and comments) |
+| `h` | Past feedback rounds |
+| `s` | Send the pending comments to the author |
+| `a` | Ask the author a question (about the selected code, if a region was active when the menu opened) |
+| `r` / `R` | Structured review on Not Diamond / on a model you pick |
+| `w` / `W` | Walkthrough on Not Diamond / on a model you pick |
+| `P` | Ship |
 
-- **`v a`, ask the author**: a question to the session that wrote the code,
-  which knows why it made each choice.
-- **`v r`, independent reviewer**: a new secondary session with
-  `--permission-mode plan`, so it can't edit. Two styles:
-  - **Guided walkthrough**: an interactive session that uses
-    `claude-code-ide`'s MCP tools to open files and move your cursor hunk by
-    hunk while you ask questions.
-  - **Structured review**: runs headless with
-    `notdiamond-claude -p --output-format stream-json` in the background.
-    Findings appear in `godel-review-mode` as sections you can jump to; mark
-    each `k` keep or `x` drop. Kept findings join the pending comments.
-- **`J`, judge** (fan-out groups): the same machinery, comparing the attempt
-  branches and recommending one.
+### Diff
 
-### Feedback loop
+`d` shows the task's **working tree, uncommitted and untracked changes
+included, against the merge base** with its base branch, in a magit diff
+buffer (`magit-diff-setup-buffer <merge-base>`). Untracked files appear
+because git is pointed at a temporary copy of the worktree's index
+(`~/.godel/tmp/index-<id>`) in which they're added as intent-to-add: a
+buffer-local `magit-git-environment` sets `GIT_INDEX_FILE`, and the copy is
+rebuilt before every refresh (advice on `magit-diff-refresh-buffer`). The
+worktree's real index is never touched.
 
-- `v l` lists every pending comment and kept finding in `godel-review-mode`.
-- `v s` collects them into one feedback message
-  (`1. file:lines / quoted code / comment ...`, plus an overall note) and opens
-  it in a compose buffer so you can edit it. `:wq` sends it to the author
-  session; the comments become *sent* and the task goes back to *working*.
-- `v h` shows past review rounds.
+Everything else in the buffer is plain magit, including keys that change the
+worktree (staging, discarding). Keep that in mind when typing in a diff.
 
-### Ship
+### Comments
 
-`P` opens a transient: commit (if needed), push, then `gh pr create --fill`.
-The PR URL is saved on the task, and merged tasks move to **Merged**.
+- **Where:** `C` on a line or a visual selection in a task diff; `SPC G c`
+  in a file inside a task's worktree (evil's `C`, "change to end of line",
+  stays as it is in files). On a line that already has an open comment, it
+  edits that comment.
+- **Mapping:** in a diff, the line at point is mapped to the new file's line
+  with `magit-diff-hunk-line`, so a comment is tied to `file:start-end`.
+- **Writing:** a compose buffer with the code shown above; `:wq` saves.
+- **Display:** under its lines, in task diffs and in files of the worktree
+  (`godel-comment-mode`), with its state and lines. `gn` / `gp` move between
+  them in diffs. Redrawn whenever the task changes.
+- **Keys and magit:** `C`, `gn`, `gp` are in `godel-diff-comment-mode`'s
+  evil intercept maps. That isn't enough for `C`: magit puts section keymaps
+  on the diff text, which beat every evil and minor-mode map, and
+  `magit-diff-section-map` binds `C` to `magit-commit-add-log`. godel
+  rebinds that entry to a menu-item with a `:filter`: godel's comment command
+  in task diffs, magit's command everywhere else.
+- **Stored** on the task (`:comments`), so they survive restarts. Each keeps
+  the text of its lines (`:anchor`). When the file changes, a comment whose
+  lines no longer match is moved to where that text is now (nearest match),
+  or marked **outdated** if the text is gone.
+- **States:** pending -> sent (`v s`) -> addressed (when the agent's next
+  turn ends), or outdated.
+- **Editing and deleting** happen in the review list (`C`, `x`).
+
+### Review list (`v l`)
+
+A `godel-review-mode` buffer for one task: the independent review's status,
+**Reviewer findings** (proposed ones, with severity, location, code and
+text), then comments grouped **Pending / Sent / Addressed / Outdated** (the
+last two collapsed). Keys: `RET` open the file at the comment, `C` edit,
+`x` delete a comment or drop a finding, `a` accept a finding (it becomes a
+pending comment, marked `[reviewer, severity]`), `s` send, `gr` refresh.
+
+### Feedback (`v s`) and history (`v h`)
+
+`v s` turns the pending comments into one message:
+
+~~~
+Here's my review of your changes. Please address each point:
+
+1. `app.py` lines 4-5:
+```
+<the lines as they are now>
+```
+<the comment>
+...
+~~~
+
+You edit it in a compose buffer (add an overall note, reword, delete
+points); `:wq` sends it to the author's session, resuming it first if it
+isn't running and waiting for its input box. The comments become *sent*
+(with the round number), the round is saved (`:review-rounds`), and they
+become *addressed* when the agent's next turn ends. `v h` lists past rounds,
+newest first.
+
+### Ask the author (`v a`)
+
+A question to the session that wrote the code, which knows why it made each
+choice. If a region was active in the task's diff or file when the menu
+opened, the code is shown above the question and sent with it ("About
+`file` lines X-Y: ..."). Asking doesn't touch the comments.
+
+### Independent reviewer
+
+Reviewers never report as the task: no godel hooks, `GODEL_SERVER` unset,
+so the task's state doesn't change. Default model: Not Diamond
+(`godel-reviewer-model`); `R` / `W` pick one.
+
+- **Structured review (`v r`)**: a headless run (`notdiamond-claude -p
+  --output-format json --no-session-persistence`, with `Edit`, `Write`,
+  `MultiEdit`, `NotebookEdit` and `Bash` disallowed) gets the task's prompt
+  and its full diff (cut at `godel-reviewer-max-diff` characters) and
+  returns findings as JSON between `<findings>` tags: file, lines, severity,
+  comment. They're stored as proposed findings and appear in the review
+  list. While it runs, the board shows "reviewing on <model>", then "N
+  findings" (or the error). It saves no transcript.
+- **Walkthrough (`v w`)**: an interactive claude-code-ide session in the
+  task's worktree, an instance named `review` (godel answers
+  claude-code-ide's instance-name prompt itself), in `--permission-mode
+  plan`. godel sends it the diff and asks it to go hunk by hunk, opening
+  each location with the `openFile` tool. In testing it explained a
+  one-hunk change in one reply without opening the file, so opening files
+  isn't guaranteed. Unlike headless runs, it leaves a normal transcript in
+  the worktree's Claude history.
+
+### Ship (`P`)
+
+1. **Draft.** The author drafts the commit message and PR description from
+   its own conversation: a headless run of a **fork** of its session
+   (`--resume <id> --fork-session -p --no-session-persistence`, read-only),
+   so the live session is untouched and nothing is saved. A task whose
+   session never started gets a draft from the diff alone. If drafting
+   fails, you get an empty draft and the reason in the header.
+2. **Edit.** A compose buffer with the commit message on top, then the line
+   `==== Pull request: title on the next line, then the description ====`,
+   then the PR title and description. If the task already has a PR, only
+   the commit message is drafted.
+3. **`:wq`** stages and commits (if there are changes), pushes
+   (`git push --set-upstream origin <branch>`, `godel-ship-remote`), and
+   runs `gh pr create --base <base> --head <branch> --title ... --body-file
+   ...` unless a PR exists. The PR URL is saved on the task. Every command
+   and its output go to `*godel-ship: <id>*`; a failure stops there and is
+   shown on the board.
+
+**Merged:** `godel-ship-check-merged` runs `gh pr view <url> --json state`
+for tasks with a PR, when the board opens and every
+`godel-ship-check-interval` seconds (default 300) while `godel-mode` is on.
+A merged PR moves the task to **merged**. Merged tasks aren't torn down
+automatically.
+
+Not tested against GitHub yet (covered by tests with a local bare remote
+and a fake `gh`).
 
 ## Worktree lifecycle
 
@@ -558,8 +722,14 @@ The PR URL is saved on the task, and merged tasks move to **Merged**.
 - Teardown warns about uncommitted or unpushed work, runs the teardown script,
   removes the worktree and keeps the branch (fan-out cleanup asks whether to
   delete the branches).
-- Import: turn any existing git worktree into a task (not Paradev's
-  worktrees).
+- **Import** (`i` on the board, `SPC G i`): lists the repo's worktrees that
+  aren't tasks yet, skipping the main checkout, detached worktrees and
+  Paradev's (`godel-import-exclude-regexp`, `/.paradev/` paths); asks for
+  the base branch and a title; makes a task with the worktree's directory
+  name as its slug. It starts without a session (`R` starts one, with a new
+  session ID) and as *needs review* if it already has changes against the
+  base.
+- Teardown of an imported task removes its worktree like any other.
 
 ## Performance
 
@@ -677,12 +847,8 @@ Claude's own start-up. Also found: the "Method not found" (-32601) errors
 come from claude-code-ide's Emacs-tools MCP server, not godel; the user is
 checking upstream. 48 ERT tests.
 
-**Phase 2: review and ship.** Diff vs base, `C` comments, pending list,
-feedback via `v s`, ask-the-author, independent reviewer (walkthrough and
-structured), ship transient, import an existing worktree.
-
-Decisions (2026-11-13), which override the Review and Ship sections where
-they differ:
+**Phase 2: review and ship.** Built 2026-11-13; described in Review, Ship
+and Worktree lifecycle. Decisions made for it (2026-11-13):
 - **Diff scope:** the working tree (uncommitted and untracked changes
   included) against the merge base with the task's base branch. Untracked
   files are shown by diffing against a temporary copy of the index with
@@ -777,11 +943,19 @@ allocation.
   waiting for the input box. These depend on screen text, which a Claude
   Code update can change. godel checks what it sees before pressing anything
   and stops with the task needing attention on any mismatch.
-- **Private functions of other packages.** godel uses
+- **Private functions and keymaps of other packages.** godel uses
   `ghostel--copy-all-text`, `ghostel--pid` (and the pipe's
-  `ghostel--native-pid`), and `claude-code-ide--display-buffer-in-side-window`.
-  An update to ghostel or claude-code-ide can rename them; the tests and the
-  end-to-end run would show it.
+  `ghostel--native-pid`), `claude-code-ide--display-buffer-in-side-window`
+  and `claude-code-ide--read-instance-name` (overridden to name the
+  walkthrough session), rebinds `C` in `magit-diff-section-map` (with a
+  filter, so it's unchanged outside task diffs), and advises
+  `magit-diff-refresh-buffer`. An update to ghostel, claude-code-ide or
+  magit can break these; the tests and an end-to-end run would show it.
+- **Typing in a task diff.** It's a magit diff: keys like stage and discard
+  act on the worktree immediately. godel only adds `C`, `gn`, `gp`.
+- **`--fork-session` and `gh`.** Ship relies on Claude's `--fork-session`
+  and on `gh` being installed and logged in. `gh pr create` hasn't been run
+  against GitHub by godel's tests yet.
 - **The `initialize` request.** Not a documented CLI command, but the Agent
   SDKs depend on it. If it fails, godel uses the cached list.
 - **Wrapper behaviour.** godel relies on the wrapper passing `--effort`,
