@@ -1296,6 +1296,18 @@ instance-name prompt bug): it waits for the first and gets its buffer."
                   '(:comments ((:state pending) (:state sent) (:state pending) (:state outdated))))
                  "2 pending, 1 sent, 1 outdated")))
 
+(ert-deftest godel-test-comment-text-faces-complete ()
+  "Every character of a comment's display text ends its face list with
+`default', so nothing is borrowed from the line it's drawn in front of."
+  (let ((text (godel-review--comment-string
+               '(:text "is the model_params right\nsecond line" :state pending :start 271 :end 271))))
+    (should (string-match-p "▍ is the model_params right" text))
+    (should (string-match-p "pending · line 271" text))
+    (dotimes (i (length text))
+      (let ((face (get-text-property i 'face text)))
+        (should (consp face))
+        (should (eq (car (last face)) 'default))))))
+
 (ert-deftest godel-test-compose-quote-not-submitted ()
   (godel-test-with-env
     (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))

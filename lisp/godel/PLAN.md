@@ -618,7 +618,11 @@ worktree (staging, discarding). Keep that in mind when typing in a diff.
   addressed, grey outdated), the text in the normal text colour (greyed once
   sent or done), and a grey italic state line; no boxes or backgrounds, which
   made the first version unreadable (faces `godel-comment`,
-  `godel-comment-dim`, `godel-comment-meta`, `godel-comment-bar`).
+  `godel-comment-dim`, `godel-comment-meta`, `godel-comment-bar`). Every
+  face list ends with `default`: Emacs merges a display string's face with
+  the face of the text it's drawn in front of, and in the GUI Doom's indent
+  guides give leading whitespace a stipple face, which covered the comment
+  with dotted lines until nothing was left unspecified.
 - **Keys and magit:** `C`, `gn`, `gp` are in `godel-diff-comment-mode`'s
   evil intercept maps. That isn't enough for `C`: magit puts section keymaps
   on the diff text, which beat every evil and minor-mode map, and

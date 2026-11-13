@@ -309,12 +309,23 @@ Nil too before magit's first refresh, when there are no sections yet."
                    (forward-line 1)))))))))
     nil))
 
+(defun godel-review--face (&rest faces)
+  "FACES for comment display text, completed with `default'.
+Emacs merges a display string's face with the face of the buffer text it
+sits in front of; anything the string's face leaves unspecified comes from
+there.  In the GUI, Doom's indent guides give a line's leading whitespace a
+face with a stipple, which then covered the comment.  Ending the list with
+`default' (which specifies every attribute) leaves nothing to borrow."
+  (append faces '(default)))
+
 (defun godel-review--bar-face (state)
   "The bar's face for a comment in STATE: the theme's colour, foreground only."
   (let* ((colour (alist-get state godel-review--state-colours))
          (fg (and colour (not (eq state 'outdated))
                   (face-foreground (intern (format "ansi-color-%s" colour)) nil t))))
-    (if fg (list 'godel-comment-bar (list :foreground fg)) '(godel-comment-bar shadow))))
+    (if fg
+        (godel-review--face 'godel-comment-bar (list :foreground fg))
+      (godel-review--face 'godel-comment-bar 'shadow))))
 
 (defun godel-review--comment-string (comment)
   "COMMENT as display text: a coloured bar, its text, then its state and lines.
@@ -325,10 +336,12 @@ readable on any theme."
          (bar (propertize "    ▍ " 'face (godel-review--bar-face state)))
          (s (plist-get comment :start)) (e (plist-get comment :end))
          (meta (format "%s · %s" state (if (= s e) (format "line %d" s) (format "lines %d-%d" s e)))))
-    (concat (mapconcat (lambda (line) (concat bar (propertize line 'face text-face)))
+    (concat (mapconcat (lambda (line)
+                         (concat bar (propertize line 'face (godel-review--face text-face))))
                        (split-string (plist-get comment :text) "\n")
-                       "\n")
-            "\n" bar (propertize meta 'face 'godel-comment-meta))))
+                       (propertize "\n" 'face (godel-review--face)))
+            (propertize "\n" 'face (godel-review--face))
+            bar (propertize meta 'face (godel-review--face 'godel-comment-meta)))))
 
 (defun godel-comment-refresh ()
   "Redraw this buffer's comment overlays."
@@ -352,6 +365,7 @@ readable on any theme."
             ;; end of a line belongs to that line, so `j' would get stuck on
             ;; it.  Only a comment on the last line hangs off its end.
             (let* ((text (godel-review--comment-string c))
+                   (nl (propertize "\n" 'face (godel-review--face)))
                    (last (>= pos (point-max)))
                    (ov (if last (make-overlay pos pos nil t nil)
                          (make-overlay (1+ pos) (1+ pos) nil nil nil))))
@@ -359,8 +373,8 @@ readable on any theme."
               (overlay-put ov 'godel-comment-line (save-excursion (goto-char pos)
                                                                   (line-beginning-position)))
               (if last
-                  (overlay-put ov 'after-string (concat "\n" text))
-                (overlay-put ov 'before-string (concat text "\n")))
+                  (overlay-put ov 'after-string (concat nl text))
+                (overlay-put ov 'before-string (concat text nl)))
               (push ov godel-comment--overlays))))))
     (setq godel-comment--overlays
           (sort godel-comment--overlays (lambda (a b) (< (overlay-start a) (overlay-start b)))))))
