@@ -429,7 +429,13 @@ it.  Without Doom workspaces, the board opens in the selected window."
     (if (file-directory-p (plist-get task :worktree))
         (magit-status-setup-buffer (plist-get task :worktree))
       (dired (plist-get task :repo)))
+    ;; Re-read: switching workspace and drawing magit can run timers, and
+    ;; one of them may already have started resuming this task.
+    (setq task (godel-task-get (plist-get task :id))
+          buffer (godel-agent-buffer task))
     (cond (buffer (godel-board--display-session buffer t))
+          ((godel-agent-starting-p task)
+           (godel-board--show-session task t))
           ((godel-agent-resumable-p task)
            (message "godel: resuming %s's Claude session" (plist-get task :id))
            (godel-board--show-session task t))
@@ -479,6 +485,9 @@ workspace."
 Asks for the model and effort, defaulting to the current ones."
   (interactive)
   (require 'godel-new)
+  (when (godel-agent-starting-p (godel-board--task))
+    (user-error "godel: %s is still starting; wait for it, then R"
+                (plist-get (godel-board--task) :id)))
   (let* ((task (godel-board--task))
          (id (plist-get task :id))
          (godel-default-model (plist-get task :model))

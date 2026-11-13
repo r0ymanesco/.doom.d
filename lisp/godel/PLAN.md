@@ -654,6 +654,15 @@ during claude-code-ide's start-up pause and be undone by godel's
 `save-window-excursion`; `godel-agent-start` now takes an ON-LAUNCH
 callback. 43 ERT tests.
 
+Duplicate sessions (2026-11-13, reported from the GUI): after a restart,
+opening a task produced two godel launches of the same `--resume` in one
+worktree, and claude-code-ide asked for an instance name for the second.
+The exact trigger wasn't reproduced. Every path to a second launch is now
+closed: one start per task (`godel-agent--starting`; a second request waits
+for the first and gets its buffer), every check reads the stored task, no
+launch over a live session, and `R` refuses while a task is starting.
+46 ERT tests.
+
 **Phase 2: review and ship.** Diff vs base, `C` comments, pending list,
 feedback via `v s`, ask-the-author, independent reviewer (walkthrough and
 structured), ship transient, import an existing worktree.

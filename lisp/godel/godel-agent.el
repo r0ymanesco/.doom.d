@@ -113,20 +113,48 @@ With RESUME, resume the task's session instead of starting it."
                        (list "--permission-mode" mode)))
              " "))
 
+(defvar godel-agent--starting (make-hash-table :test #'equal)
+  "Task ID -> ON-LAUNCH callbacks, while that task's session is starting.")
+
+(defun godel-agent-starting-p (task)
+  "Non-nil while TASK's session is being started."
+  (gethash (plist-get task :id) godel-agent--starting))
+
+(defun godel-agent--launched (id buffer)
+  "Finish starting task ID: call every waiting ON-LAUNCH with BUFFER."
+  (let ((callbacks (gethash id godel-agent--starting)))
+    (remhash id godel-agent--starting)
+    (dolist (cb (reverse callbacks))
+      (ignore-errors (funcall cb buffer)))))
+
 (defun godel-agent-start (task &optional resume on-launch)
   "Start (or with RESUME, resume) TASK's Claude session.
 The prompt in the task's :pending-prompt is sent once the session has
 started on the right model.  ON-LAUNCH, if non-nil, is called with the
 session buffer once the launch has returned (nil if it failed); that's
-the safe moment to show the buffer."
-  (let ((id (plist-get task :id))
-        (on-launch (or on-launch #'ignore)))
+the safe moment to show the buffer.
+
+Only one start runs per task: if one is already in progress, ON-LAUNCH
+just waits for it.  Another start can be triggered while one is pending
+\(e.g. a workspace switch and RET both resuming), and two launches in one
+directory would make claude-code-ide ask for an instance name."
+  (let* ((id (plist-get task :id))
+         (task (or (godel-task-get id) task))
+         (on-launch (or on-launch #'ignore)))
+    (if (godel-agent-starting-p task)
+        (push on-launch (gethash id godel-agent--starting))
+      (godel-agent--start task resume on-launch))))
+
+(defun godel-agent--start (task resume on-launch)
+  (let ((id (plist-get task :id)))
     (when (and (godel-models-pin-broken-p)
                (not (godel-models-router-p (godel-models-find (plist-get task :model)))))
       (godel-task-update id :state 'stopped
                          :last-event (format "not started: the model pin isn't working (%s)"
                                              (cdr godel-models-pin-status)))
+      (funcall on-launch nil)
       (user-error "godel: pinned models are unavailable: %s" (cdr godel-models-pin-status)))
+    (puthash id (list on-launch) godel-agent--starting)
     ;; A resumed session comes back in the state it was in (e.g. still
     ;; ready for review); see the SessionStart case in godel-status.el.
     (when resume
@@ -139,14 +167,17 @@ the safe moment to show the buffer."
      (lambda (ok &optional err)
        (if (not ok)
            (progn (godel-task-update id :state 'stopped :last-event (or err "proxy check failed"))
-                  (funcall on-launch nil))
+                  (godel-agent--launched id nil))
          (condition-case e
-             (progn (godel-agent--launch (godel-task-get id) resume)
-                    (funcall on-launch (godel-agent-buffer (godel-task-get id))))
+             (let ((task (godel-task-get id)))
+               ;; Last guard: never a second session in the same worktree.
+               (unless (godel-agent-live-p task)
+                 (godel-agent--launch task resume))
+               (godel-agent--launched id (godel-agent-buffer (godel-task-get id))))
            (error (godel-task-update id :state 'stopped
                                      :last-event (format "launch failed: %s"
                                                          (error-message-string e)))
-                  (funcall on-launch nil))))))))
+                  (godel-agent--launched id nil))))))))
 
 (defun godel-agent--launch (task resume)
   (require 'claude-code-ide)
@@ -297,8 +328,11 @@ Resumed sessions don't report a model, so their processes are checked."
   "Non-nil if TASK's session isn't running but can be resumed.
 It must have started before (it has a transcript), its worktree must
 exist, and it mustn't be starting already or flagged as a model mismatch
-\(which needs a deliberate restart)."
-  (and (plist-get task :transcript)
+\(which needs a deliberate restart).  Uses the task's current data, not
+the (possibly stale) plist passed in."
+  (setq task (or (godel-task-get (plist-get task :id)) task))
+  (and (not (godel-agent-starting-p task))
+       (plist-get task :transcript)
        (plist-get task :session-id)
        (not (memq (plist-get task :state) '(setting-up model-mismatch)))
        (file-directory-p (plist-get task :worktree))
@@ -310,8 +344,11 @@ A running session is passed straight away.  A session that can be
 resumed (`godel-agent-resumable-p') is resumed, and CALLBACK runs once
 the launch has returned.  Otherwise, or if resuming fails, CALLBACK gets
 nil."
+  (setq task (or (godel-task-get (plist-get task :id)) task))
   (cond
    ((godel-agent-live-p task) (funcall callback (godel-agent-buffer task)))
+   ;; Already starting (e.g. from a workspace switch): wait for that start.
+   ((godel-agent-starting-p task) (godel-agent-start task t callback))
    ((not (godel-agent-resumable-p task)) (funcall callback nil))
    (t (condition-case err
           (godel-agent-start task t callback)

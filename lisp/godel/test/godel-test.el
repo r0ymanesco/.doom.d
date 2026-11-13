@@ -640,17 +640,23 @@ The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
 
 (ert-deftest godel-test-resumable ()
   (godel-test-with-env
-    (let ((task (godel-test-started-task tmp 'needs-review)))
+    (let* ((task (godel-test-started-task tmp 'needs-review))
+           (id (plist-get task :id)))
       (should (godel-agent-resumable-p task))
-      (should-not (godel-agent-resumable-p (plist-put (copy-sequence task) :state 'model-mismatch)))
-      (should-not (godel-agent-resumable-p (plist-put (copy-sequence task) :state 'setting-up)))
-      (should-not (godel-agent-resumable-p (plist-put (copy-sequence task) :transcript nil)))
+      (dolist (state '(model-mismatch setting-up))
+        (godel-task-update id :state state)
+        (should-not (godel-agent-resumable-p task)))
+      (godel-task-update id :state 'idle :transcript nil)
+      (should-not (godel-agent-resumable-p task))
+      (godel-task-update id :transcript (expand-file-name "t.jsonl" tmp))
+      (should (godel-agent-resumable-p task))
       (cl-letf (((symbol-function 'godel-agent-live-p) (lambda (_) t)))
         (should-not (godel-agent-resumable-p task))))))
 
 (ert-deftest godel-test-ensure-session ()
   (godel-test-with-env
     (let* ((task (godel-test-started-task tmp 'idle))
+           (id (plist-get task :id))
            (fake (generate-new-buffer " fake-session"))
            (started nil) (got 'pending))
       (unwind-protect
@@ -661,7 +667,7 @@ The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
                     ((symbol-function 'godel-agent-buffer) (lambda (_) fake)))
             ;; Resumable: resumes, and calls back with the buffer after launch.
             (godel-agent-ensure-session task (lambda (b) (setq got b)))
-            (should (equal started (list (plist-get task :id) t)))
+            (should (equal started (list id t)))
             (should (eq got fake))
             ;; Running: straight away, no new start.
             (setq started nil got 'pending)
@@ -671,11 +677,62 @@ The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
             (should-not started)
             ;; Not resumable (wrong model): nil, no start.
             (setq got 'pending)
-            (godel-agent-ensure-session (plist-put (copy-sequence task) :state 'model-mismatch)
-                                        (lambda (b) (setq got b)))
+            (godel-task-update id :state 'model-mismatch)
+            (godel-agent-ensure-session task (lambda (b) (setq got b)))
             (should (null got))
             (should-not started))
         (kill-buffer fake)))))
+
+(ert-deftest godel-test-one-start-per-task ()
+  "A second resume while one is starting doesn't launch again (the
+instance-name prompt bug): it waits for the first and gets its buffer."
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'needs-review))
+           (stale (copy-sequence task))
+           (fake (generate-new-buffer " fake-session"))
+           (launches 0) (proxy-callbacks nil) (got1 'pending) (got2 'pending))
+      (unwind-protect
+          (cl-letf (((symbol-function 'godel-models-ensure-proxy)
+                     (lambda (cb) (push cb proxy-callbacks)))
+                    ((symbol-function 'godel-agent--launch)
+                     (lambda (&rest _) (setq launches (1+ launches))))
+                    ((symbol-function 'godel-agent-buffer) (lambda (_) fake)))
+            ;; First resume (e.g. the workspace switch) is waiting on the proxy.
+            (godel-agent-ensure-session task (lambda (b) (setq got1 b)))
+            (should (godel-agent-starting-p task))
+            ;; Second request with the stale plist (e.g. RET): no new start.
+            (should-not (godel-agent-resumable-p stale))
+            (godel-agent-ensure-session stale (lambda (b) (setq got2 b)))
+            (should (= (length proxy-callbacks) 1))
+            ;; The proxy answers: one launch, both callers get the buffer.
+            (funcall (car proxy-callbacks) t)
+            (should (= launches 1))
+            (should (eq got1 fake))
+            (should (eq got2 fake))
+            (should-not (godel-agent-starting-p task)))
+        (kill-buffer fake)))))
+
+(ert-deftest godel-test-restart-refused-while-starting ()
+  "R on a task that's still starting doesn't launch a second session."
+  (godel-test-with-env
+    (let ((task (godel-test-started-task tmp 'idle)))
+      (puthash (plist-get task :id) (list #'ignore) godel-agent--starting)
+      (with-temp-buffer
+        (cl-letf (((symbol-function 'godel-board--task) (lambda () task))
+                  ((symbol-function 'godel-agent-start) (lambda (&rest _) (error "Must not start"))))
+          (should-error (godel-board-restart) :type 'user-error)))
+      (remhash (plist-get task :id) godel-agent--starting))))
+
+(ert-deftest godel-test-no-launch-when-session-live ()
+  "Even if a start gets through, it never launches over a live session."
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'idle))
+           (launches 0))
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-agent--launch) (lambda (&rest _) (setq launches (1+ launches))))
+                ((symbol-function 'godel-agent-live-p) (lambda (_) t)))
+        (godel-agent-start task t))
+      (should (= launches 0)))))
 
 (ert-deftest godel-test-start-calls-on-launch-after-launch ()
   "ON-LAUNCH runs after the launch returns, not during it."
@@ -684,6 +741,7 @@ The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
            (order nil))
       (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
                 ((symbol-function 'godel-agent--launch) (lambda (&rest _) (push 'launch order)))
+                ((symbol-function 'godel-agent-live-p) #'ignore)
                 ((symbol-function 'godel-agent-buffer) (lambda (_) 'buf)))
         (godel-agent-start task t (lambda (b) (push (list 'on-launch b) order))))
       (should (equal (reverse order) '(launch (on-launch buf))))
