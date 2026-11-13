@@ -1240,6 +1240,34 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (unwind-protect (should (godel-test-text-order-p "Merged (1)" "rev"))
           (kill-buffer))))))
 
+(ert-deftest godel-test-import-worktree ()
+  (godel-test-with-env
+    (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
+           (outside (expand-file-name "elsewhere/feature-x" tmp))
+           (paradev (expand-file-name ".paradev/worktrees/repo/pd" tmp))
+           (default-directory repo))
+      (call-process "git" nil nil nil "worktree" "add" "-q" "-b" "feature-x" outside "main")
+      (call-process "git" nil nil nil "worktree" "add" "-q" "-b" "pd-branch" paradev "main")
+      (call-process "git" nil nil nil "worktree" "add" "-q" "--detach"
+                    (expand-file-name "detached" tmp) "main")
+      (with-temp-file (expand-file-name "new.txt" outside) (insert "x\n"))
+      ;; Offered: only the named, non-Paradev one.
+      (let ((offered (godel-new-importable-worktrees repo)))
+        (should (equal (mapcar #'cdr offered) '("feature-x"))))
+      (let* ((task (godel-new-import repo outside "feature-x" "main" "Feature X"))
+             (id (plist-get task :id)))
+        (should (equal id "feature-x"))
+        (should (equal (plist-get task :worktree) (file-name-as-directory outside)))
+        (should (equal (plist-get task :branch) "feature-x"))
+        (should (plist-get task :session-id))
+        (should-not (plist-get task :transcript))
+        ;; It has changes, so it's ready for review once checked.
+        (should (godel-test-wait (lambda () (eq (plist-get (godel-task-get id) :state) 'needs-review)) 5))
+        ;; Not offered again.
+        (should-not (godel-new-importable-worktrees repo))
+        ;; A fresh session, not a resume, is what R would start.
+        (should-not (godel-agent-resumable-p (godel-task-get id)))))))
+
 (ert-deftest godel-test-review-history ()
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp)))

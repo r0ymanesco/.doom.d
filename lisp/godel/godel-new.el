@@ -17,6 +17,7 @@
 (require 'godel-worktree)
 (require 'godel-agent)
 (require 'godel-compose)
+(require 'godel-status)
 
 (defvar godel-new--repo nil "Repo the open new-task transient is for.")
 
@@ -162,6 +163,69 @@ If there is nothing after it, the title is also the prompt."
            (godel-task-update id :state 'stopped :last-event err)
          (godel-agent-start (godel-task-get id)))))
     task))
+
+;;;; Importing an existing worktree
+
+(defcustom godel-import-exclude-regexp "/\\.paradev\\(-[^/]*\\)?/"
+  "Worktrees whose path matches this are never offered for import.
+By default Paradev's worktrees, which godel stays separate from."
+  :group 'godel
+  :type 'regexp)
+
+(defun godel-new--worktrees (repo)
+  "REPO's worktrees as (PATH . BRANCH), main checkout and detached ones excluded."
+  (let ((default-directory repo) entries path)
+    (dolist (line (process-lines "git" "worktree" "list" "--porcelain"))
+      (cond ((string-prefix-p "worktree " line) (setq path (substring line 9)))
+            ((string-prefix-p "branch refs/heads/" line)
+             (push (cons (file-name-as-directory path) (substring line 18)) entries))))
+    (cl-remove-if (lambda (e) (equal (expand-file-name (car e)) (expand-file-name repo)))
+                  (nreverse entries))))
+
+(defun godel-new-importable-worktrees (repo)
+  "REPO's worktrees that can become tasks: not already one, not excluded."
+  (cl-remove-if (lambda (e)
+                  (or (string-match-p godel-import-exclude-regexp (car e))
+                      (cl-find (expand-file-name (car e)) (godel-task-all)
+                               :key (lambda (task) (expand-file-name (plist-get task :worktree)))
+                               :test #'equal)))
+                (godel-new--worktrees repo)))
+
+(defun godel-new-import (repo path branch base title)
+  "Make a task of REPO's existing worktree at PATH (on BRANCH, from BASE)."
+  (let* ((name (file-name-nondirectory (directory-file-name path)))
+         (slug (if (or (godel-task-get name) (godel-task-by-slug name)) (godel-task-slug name) name))
+         (task (godel-task-create :title title :repo repo :id slug :slug slug
+                                  :worktree (file-name-as-directory (expand-file-name path))
+                                  :branch branch :base base
+                                  :model godel-default-model :effort godel-default-effort
+                                  :session-id (godel-new--uuid)
+                                  :state 'idle :last-event "imported; R starts a session")))
+    (godel-status-check-changes
+     (plist-get task :id)
+     (lambda (changed stat)
+       (when (godel-task-get (plist-get task :id))
+         (godel-task-update (plist-get task :id) :state (if changed 'needs-review 'idle)
+                            :diffstat stat))))
+    task))
+
+;;;###autoload
+(defun godel-import-worktree (&optional repo)
+  "Make an existing git worktree of REPO (default: this repo) a godel task."
+  (interactive)
+  (let* ((repo (or repo (godel-task-repo-root default-directory)
+                   (godel-task-repo-root (read-directory-name "godel: repository: "))
+                   (user-error "godel: not a git repository")))
+         (_ (godel-task-load-repo repo))
+         (candidates (or (godel-new-importable-worktrees repo)
+                         (user-error "godel: no worktrees of %s to import" (abbreviate-file-name repo))))
+         (labels (mapcar (lambda (e) (cons (format "%s  (%s)" (abbreviate-file-name (car e)) (cdr e)) e))
+                         candidates))
+         (pick (cdr (assoc (completing-read "Import worktree: " labels nil t) labels)))
+         (base (completing-read "Base branch: " (godel-new--branches repo) nil t nil nil
+                                (godel-new--default-base repo)))
+         (title (read-string "Title: " (cdr pick))))
+    (message "godel: imported %s" (plist-get (godel-new-import repo (car pick) (cdr pick) base title) :id))))
 
 (provide 'godel-new)
 ;;; godel-new.el ends here

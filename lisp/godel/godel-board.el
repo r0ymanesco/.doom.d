@@ -11,7 +11,8 @@
 ;;   TAB  show details                  m  message the agent
 ;;   R    restart/resume (new model?)   x  tear down (keeps the branch)
 ;;   d    diff with comments (C)        v  review menu
-;;   P    commit, push, open a PR       gr refresh
+;;   P    commit, push, open a PR       i  import a worktree
+;;   gr   refresh
 ;;   q    quit (hides the sidebar)
 
 ;;; Code:
@@ -28,6 +29,7 @@
 (declare-function godel-review-diff "godel-review" (task))
 (declare-function godel-review-menu "godel-review" (&optional task))
 (declare-function godel-ship "godel-ship" (task))
+(declare-function godel-import-worktree "godel-new" (&optional repo))
 (declare-function godel-ship-check-merged "godel-ship" ())
 (declare-function godel-new--read-model "godel-new" (prompt initial history))
 (declare-function magit-status-setup-buffer "magit-status" (&optional directory))
@@ -135,6 +137,7 @@ board) removes plain `face' properties when it fontifies."
   "d" #'godel-board-diff
   "v" #'godel-board-review
   "P" #'godel-board-ship
+  "i" #'godel-board-import
   "g r" #'godel-board-refresh
   "q" #'godel-board-quit)
 
@@ -161,6 +164,7 @@ board) removes plain `face' properties when it fontifies."
     "d" #'godel-board-diff
     "v" #'godel-board-review
     "P" #'godel-board-ship
+    "i" #'godel-board-import
     "gr" #'godel-board-refresh
     "q" #'godel-board-quit))
 
@@ -523,6 +527,12 @@ workspace."
   (interactive)
   (require 'godel-ship)
   (godel-ship (godel-board--task)))
+
+(defun godel-board-import ()
+  "Make an existing worktree of the repo at point (or this repo) a task."
+  (interactive)
+  (require 'godel-new)
+  (godel-import-worktree (godel-board--repo-at-point)))
 
 (defun godel-board-message ()
   "Send a message to the task's agent."
