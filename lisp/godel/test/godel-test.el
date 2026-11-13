@@ -1351,6 +1351,49 @@ instance-name prompt bug): it waits for the first and gets its buffer."
       (should (= (car exit-out) 0))
       (should (string-match-p "\"result\":\"x\"" (cdr exit-out))))))
 
+(ert-deftest godel-test-walkthrough-comment-tools ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (wt (plist-get task :worktree))
+           (review (get-buffer-create (godel-agent-buffer-name wt "review")))
+           (author (get-buffer-create (godel-agent-buffer-name wt)))
+           (ctx nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'claude-code-ide-mcp-server-get-session-context)
+                     (lambda (&rest _) ctx)))
+            ;; Only the task's walkthrough session may call them.
+            (setq ctx nil)
+            (should-error (godel-reviewer-tool-list-comments))
+            (setq ctx (list :project-dir wt :buffer author))
+            (should-error (godel-reviewer-tool-add-comment "app.py" 5 5 "x"))
+            (setq ctx (list :project-dir wt :buffer review))
+            (should (equal (godel-reviewer-tool-list-comments) "No open review comments yet."))
+            ;; Relative and absolute paths; end_line defaults to start_line.
+            (should (string-match-p "Added a pending comment on app.py:5\\."
+                                    (godel-reviewer-tool-add-comment "app.py" 5 nil "Why 20?")))
+            (godel-reviewer-tool-add-comment (expand-file-name "new.txt" wt) 1 1 "Needed?")
+            (let ((cs (plist-get (godel-task-get id) :comments)))
+              (should (equal (mapcar (lambda (c) (list (plist-get c :file) (plist-get c :start)
+                                                       (plist-get c :end) (plist-get c :text)
+                                                       (plist-get c :state)))
+                                     cs)
+                             '(("app.py" 5 5 "[walkthrough] Why 20?" pending)
+                               ("new.txt" 1 1 "[walkthrough] Needed?" pending)))))
+            (should (string-match-p "^- app.py:5 \\[pending\\] \\[walkthrough\\] Why 20\\?"
+                                    (godel-reviewer-tool-list-comments)))
+            ;; Files outside the worktree, or missing, are refused.
+            (should-error (godel-reviewer-tool-add-comment "nope.py" 1 1 "x"))
+            (should-error (godel-reviewer-tool-add-comment "/etc/passwd" 1 1 "x")))
+        (kill-buffer review)
+        (kill-buffer author)))))
+
+(ert-deftest godel-test-walkthrough-tools-registered ()
+  (require 'claude-code-ide-mcp-server)
+  (let ((names (mapcar (lambda (spec) (plist-get spec :name)) claude-code-ide-mcp-server-tools)))
+    (should (member "godel_add_comment" names))
+    (should (member "godel_list_comments" names))))
+
 (ert-deftest godel-test-review-history ()
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp)))

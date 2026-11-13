@@ -17,7 +17,12 @@
 ;; Walkthrough (`godel-reviewer-walkthrough', v w): an interactive Claude
 ;; session in the task's worktree, a claude-code-ide instance named
 ;; "review", that walks you through the diff and opens each location in
-;; Emacs.  It runs read-only (`--permission-mode plan').
+;; Emacs.  It can't change files (editing and shell tools are disallowed;
+;; not plan mode, which asks before every MCP tool call).  You talk to it in
+;; its window; it records review comments with godel's MCP tools
+;; (`godel_add_comment', `godel_list_comments', registered on
+;; claude-code-ide's emacs-tools server), both on its own and when you ask
+;; or agree.  The tools only work for a task's walkthrough session.
 ;;
 ;; Both default to the Not Diamond router; with a prefix argument you pick
 ;; the model.
@@ -281,6 +286,88 @@ exit status and all the output once the process ends."
 
 (defconst godel-reviewer-walkthrough-instance "review")
 
+;;;; Comment tools for the walkthrough
+
+(declare-function claude-code-ide-make-tool "claude-code-ide-mcp-server" (&rest slots))
+(declare-function claude-code-ide-mcp-server-get-session-context "claude-code-ide-mcp-server"
+                  (&optional session-id))
+(defvar claude-code-ide-enable-mcp-server)
+
+(defun godel-reviewer--calling-task ()
+  "The task whose walkthrough session is calling a godel tool.
+Signals an error for any other caller (the author's session, or a
+Claude session that isn't godel's)."
+  (let* ((ctx (claude-code-ide-mcp-server-get-session-context))
+         (buffer (plist-get ctx :buffer))
+         (task (and ctx (plist-get ctx :project-dir)
+                    (godel-task-by-directory (plist-get ctx :project-dir)))))
+    (unless (and task (buffer-live-p buffer)
+                 (equal (buffer-name buffer)
+                        (godel-agent-buffer-name (plist-get task :worktree)
+                                                 godel-reviewer-walkthrough-instance)))
+      (error "These tools are only available in a godel walkthrough session"))
+    task))
+
+(defun godel-reviewer--tool-file (task file)
+  "FILE relative to TASK's worktree; signals an error if it isn't there."
+  (let* ((wt (file-name-as-directory (expand-file-name (plist-get task :worktree))))
+         (abs (expand-file-name file wt)))
+    (unless (and (string-prefix-p wt abs) (file-exists-p abs))
+      (error "No file %s in the task's worktree" file))
+    (file-relative-name abs wt)))
+
+(defun godel-reviewer-tool-add-comment (file start_line end_line comment)
+  "MCP tool: add a pending review comment to the task (walkthrough only)."
+  (let* ((task (godel-reviewer--calling-task))
+         (file (godel-reviewer--tool-file task file))
+         (start (if (stringp start_line) (string-to-number start_line) start_line))
+         (end (cond ((null end_line) start)
+                    ((stringp end_line) (string-to-number end_line))
+                    (t end_line))))
+    (unless (and (integerp start) (> start 0)) (error "start_line must be a line number"))
+    (when (< end start) (setq end start))
+    (godel-review-add-comment (plist-get task :id) file start end
+                              (concat "[walkthrough] " (string-trim comment)))
+    (format "Added a pending comment on %s:%s. The reviewer (the user) sees it in the diff and decides whether to send it to the author."
+            file (if (= start end) start (format "%d-%d" start end)))))
+
+(defun godel-reviewer-tool-list-comments ()
+  "MCP tool: the task's open review comments (walkthrough only)."
+  (let* ((task (godel-reviewer--calling-task))
+         (open (godel-review-comments task '(pending sent))))
+    (if (null open)
+        "No open review comments yet."
+      (mapconcat (lambda (c)
+                   (let ((s (plist-get c :start)) (e (plist-get c :end)))
+                     (format "- %s:%s [%s] %s" (plist-get c :file)
+                             (if (= s e) s (format "%d-%d" s e))
+                             (plist-get c :state) (plist-get c :text))))
+                 open "\n"))))
+
+(defun godel-reviewer--register-tools ()
+  "Register godel's comment tools on claude-code-ide's MCP tools server."
+  (claude-code-ide-make-tool
+   :function #'godel-reviewer-tool-add-comment
+   :name "godel_add_comment"
+   :description "Add a review comment on lines of a file in this task's worktree. The comment goes to the user's review list as pending; the user decides whether to send it to the author of the change. Use it for real problems you find while walking through the change, and whenever the user asks you to note something or agrees that something should change. Write the comment for the author: what's wrong and what to do. Only available in a godel walkthrough session."
+   :args '((:name "file" :type string :description "Path relative to the repository root (or absolute inside the worktree).")
+           (:name "start_line" :type integer :description "First line, in the file as it is now.")
+           (:name "end_line" :type integer :description "Last line (defaults to start_line)." :optional t)
+           (:name "comment" :type string :description "The comment for the author."))
+   :category "godel")
+  (claude-code-ide-make-tool
+   :function #'godel-reviewer-tool-list-comments
+   :name "godel_list_comments"
+   :description "List this task's open review comments (pending or sent), so you don't add duplicates. Only available in a godel walkthrough session."
+   :category "godel"))
+
+(with-eval-after-load 'claude-code-ide-mcp-server
+  (godel-reviewer--register-tools))
+
+(defconst godel-reviewer--walkthrough-tools
+  '("mcp__emacs-tools__godel_add_comment" "mcp__emacs-tools__godel_list_comments")
+  "godel's tools as Claude names them; allowed without asking in walkthroughs.")
+
 (defun godel-reviewer-walkthrough-prompt (task)
   (format "Walk me through the changes in this worktree, one hunk at a time.
 They're against %s, new files included:
@@ -288,12 +375,22 @@ They're against %s, new files included:
 %s```
 For each hunk: open the file at that spot with the openFile tool, explain
 what changed and why it matters, point out anything questionable, then stop
-and wait for me before the next hunk. Don't change any files."
+and wait for me before the next hunk. Don't change any files.
+
+Record review comments with the godel_add_comment tool (file, lines as they
+are now, and a comment written for the author: what's wrong and what to
+do). Add one on your own whenever you find a real problem, and whenever I
+ask you to note something or agree that something should change. Say
+briefly what you noted. Check godel_list_comments first so you don't add
+duplicates."
           (plist-get task :base) (godel-reviewer-diff-text task)))
 
 (defun godel-reviewer-walkthrough (task &optional model)
   "Start an interactive, read-only walkthrough of TASK's changes."
   (require 'claude-code-ide)
+  (require 'claude-code-ide-mcp-server nil t)
+  (unless (bound-and-true-p claude-code-ide-enable-mcp-server)
+    (message "godel: the walkthrough can't record comments: claude-code-ide's MCP tools are off (see `claude-code-ide-emacs-tools-setup')"))
   (let* ((entry (godel-reviewer--model-entry (or model godel-reviewer-model)))
          (launch (godel-models-launch-env entry godel-default-effort))
          (prompt (godel-reviewer-walkthrough-prompt task)))
@@ -307,8 +404,15 @@ and wait for me before the next hunk. Don't change any files."
                 (process-environment (godel-reviewer--env launch))
                 (claude-code-ide-cli-path godel-claude-program)
                 (claude-code-ide-cli-extra-flags
+                 ;; Read-only by taking away the tools that change things,
+                 ;; not by plan mode: plan mode asks before every MCP tool
+                 ;; call, godel's comment tools included.
                  (mapconcat #'shell-quote-argument
-                            (append '("--permission-mode" "plan") (plist-get launch :args))
+                            (append '("--permission-mode" "default")
+                                    godel-reviewer--read-only-flags
+                                    (list "--allowedTools"
+                                          (string-join godel-reviewer--walkthrough-tools ","))
+                                    (plist-get launch :args))
                             " "))
                 (claude-code-ide-focus-on-open t)
                 ;; claude-code-ide asks for an instance name when it's offered

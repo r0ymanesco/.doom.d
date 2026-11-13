@@ -713,12 +713,33 @@ so the task's state doesn't change. Default model: Not Diamond
   searched, and ended at "◎ 4 findings" with the notification.
 - **Walkthrough (`v w`)**: an interactive claude-code-ide session in the
   task's worktree, an instance named `review` (godel answers
-  claude-code-ide's instance-name prompt itself), in `--permission-mode
-  plan`. godel sends it the diff and asks it to go hunk by hunk, opening
-  each location with the `openFile` tool. In testing it explained a
-  one-hunk change in one reply without opening the file, so opening files
-  isn't guaranteed. Unlike headless runs, it leaves a normal transcript in
-  the worktree's Claude history.
+  claude-code-ide's instance-name prompt itself). It can't change files:
+  `Edit`, `Write`, `MultiEdit`, `NotebookEdit` and `Bash` are disallowed.
+  (Not plan mode: plan mode asks before every MCP tool call, godel's
+  included.) godel sends it the diff and asks it to go hunk by hunk,
+  opening each location with the `openFile` tool. You reply in its window.
+  - **It records review comments** with two godel MCP tools, registered on
+    claude-code-ide's emacs-tools server (`claude-code-ide-make-tool`):
+    `godel_add_comment(file, start_line, end_line?, comment)` adds a pending
+    comment marked `[walkthrough]`; `godel_list_comments()` lists the open
+    ones so it doesn't add duplicates. It adds comments **on its own** for
+    real problems, and when you ask or agree. They go to your review list;
+    you decide what's sent to the author (`v s`).
+  - The tools only work for a task's `review` session: they check the
+    calling session's buffer through claude-code-ide's session context and
+    refuse anyone else (the author's session, other Claude sessions).
+    They're pre-approved (`--allowedTools`), so there's no prompt.
+  - They need claude-code-ide's MCP tools server
+    (`claude-code-ide-emacs-tools-setup`); godel says so if it's off. Until
+    claude-code-ide answers Claude's `server/discover` probe, the tools
+    connect a few seconds after the session starts (Claude waits).
+  - Tested with a real walkthrough: no prompts; it added two comments on its
+    own (a missing space, `== None`) and a third when asked in the chat.
+  - Opening files with `openFile` isn't guaranteed (with one small hunk the
+    model explained it in one reply), and there's no tool to delete
+    comments: that's the review list's `x` or `SPC G x`.
+  - Unlike headless runs, it leaves a normal transcript in the worktree's
+    Claude history.
 
 ### Ship (`P`)
 
