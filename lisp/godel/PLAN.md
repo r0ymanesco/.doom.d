@@ -706,6 +706,25 @@ they differ:
 - Built in steps: diff and comments; feedback loop; ask the author;
   independent reviewer; ship; import an existing worktree.
 
+Built 2026-11-13 (commits fc9f44d..4b1dfe7, 67 ERT tests). Keys: board
+`d` diff, `v` review menu, `P` ship, `i` import; leader `SPC G c`
+comment, `SPC G v` review menu, `SPC G i` import; in task diffs `C`,
+`gn`/`gp`; in the review list `RET`, `C`, `x`, `a`, `s`. Tested in Doom
+(terminal) with real Claude sessions: comments through the keys, a
+feedback round the agent applied (pending -> sent -> addressed), a
+question about a selected region, a structured review (one finding in
+11s, accepted as a comment), a walkthrough in plan mode, an author draft
+of the commit message and PR (8s), importing a worktree. Not tested for
+real: `gh pr create` and the merged check against GitHub (covered with a
+local bare remote and a fake `gh`). Learned on the way:
+- magit's diff keys are text-property section keymaps, which beat every
+  evil and minor-mode map; godel makes magit's `C` binding conditional
+  instead (`magit-diff-section-map`).
+- The walkthrough doesn't reliably open files in Emacs: with one small
+  hunk the model explained everything at once.
+- An interactive walkthrough leaves a normal transcript in the worktree's
+  history; headless reviews and ship drafts leave none.
+
 **Phase 3: durability.** On startup, offer `--resume <session-id>` for tasks
 that were running. Optional tmux backend so agents keep running when Emacs
 closes.
