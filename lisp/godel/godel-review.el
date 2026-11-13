@@ -21,6 +21,12 @@
 ;;    :text "..." :state pending|sent|addressed|outdated :created TIME)
 ;; When the agent changes a file, a comment is found again by its anchor
 ;; text; if the text is gone it becomes outdated.
+;;
+;; Feedback: `godel-review-list' (v l) lists comments by state;
+;; `godel-review-send' (v s) turns the pending ones into one message, which
+;; you edit and send to the author's session.  Sent comments become
+;; addressed when the agent finishes its next turn.  `godel-review-history'
+;; (v h) shows past rounds.  `godel-review-menu' (v) has all of it.
 
 ;;; Code:
 
@@ -29,6 +35,10 @@
 (require 'magit)
 (require 'godel-task)
 (require 'godel-compose)
+(require 'godel-agent)
+(require 'godel-status)
+(require 'godel-tui)
+(require 'transient)
 
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
 (declare-function evil-make-intercept-map "evil-core" (keymap &optional state aux))
@@ -402,6 +412,259 @@ Nil too before magit's first refresh, when there are no sections yet."
             (godel-comment-refresh)))))))
 
 (add-hook 'godel-event-functions #'godel-review--refresh-buffers)
+
+;;;; Sending feedback
+
+(defun godel-review--send-to-author (task text &optional on-sent)
+  "Send TEXT to TASK's author session, resuming it first if needed.
+ON-SENT, if non-nil, is called once the text has been sent."
+  (godel-agent-ensure-session
+   task (lambda (buffer)
+          (if (not buffer)
+              (message "godel: %s has no session to send to; R on the board starts one"
+                       (plist-get task :id))
+            ;; A just-resumed session needs its input box before typing.
+            (godel-tui-wait buffer #'godel-tui-input-ready-p 20
+                            (lambda (screen)
+                              (if (not screen)
+                                  (message "godel: the session isn't ready for input; nothing sent")
+                                (godel-agent-send (godel-task-get (plist-get task :id)) text)
+                                (when on-sent (funcall on-sent)))))))))
+
+(defun godel-review-feedback-text (task)
+  "One message with TASK's pending comments, each with the code it's about."
+  (let ((pending (godel-review-comments task '(pending)))
+        (n 0))
+    (concat
+     "Here's my review of your changes. Please address each point:\n\n"
+     (mapconcat
+      (lambda (c)
+        (let* ((s (plist-get c :start)) (e (plist-get c :end))
+               (code (or (godel-review--file-lines task (plist-get c :file) s e)
+                         (plist-get c :anchor) "")))
+          (format "%d. `%s` %s:\n```\n%s\n```\n%s\n"
+                  (cl-incf n) (plist-get c :file)
+                  (if (= s e) (format "line %d" s) (format "lines %d-%d" s e))
+                  code (plist-get c :text))))
+      pending "\n")
+     "\n")))
+
+(defun godel-review-send (task)
+  "Edit TASK's pending comments as one message, then send it to the author."
+  (let* ((id (plist-get task :id))
+         (pending (godel-review-comments (godel-review--refreshed task) '(pending))))
+    (unless pending (user-error "godel: no pending comments on %s" id))
+    (godel-compose
+     (plist-get task :repo) 'feedback
+     (format "Feedback for %s (%d comment%s)" id (length pending) (if (cdr pending) "s" ""))
+     (lambda (text)
+       (let ((ids (mapcar (lambda (c) (plist-get c :id)) pending)))
+         (godel-review--send-to-author
+          (godel-task-get id) text
+          (lambda ()
+            (let* ((task (godel-task-get id))
+                   (round (1+ (length (plist-get task :review-rounds)))))
+              (godel-review--set-comments
+               id (mapcar (lambda (c)
+                            (if (memq (plist-get c :id) ids)
+                                (plist-put (plist-put (copy-sequence c) :state 'sent) :round round)
+                              c))
+                          (plist-get task :comments)))
+              (godel-task-update id :review-rounds
+                                 (append (plist-get (godel-task-get id) :review-rounds)
+                                         (list (list :round round :time (float-time) :text text))))
+              (message "godel: feedback round %d sent to %s" round id))))))
+     (godel-review-feedback-text (godel-review--refreshed task)))))
+
+(defun godel-review--refreshed (task)
+  "TASK after re-finding its comments."
+  (godel-review-resolve-all (plist-get task :id))
+  (godel-task-get (plist-get task :id)))
+
+(defun godel-review--on-stop (id)
+  "When the author finishes a turn, its sent comments count as addressed."
+  (let ((task (godel-task-get id)))
+    (when (godel-review-comments task '(sent))
+      (godel-review--set-comments
+       id (mapcar (lambda (c)
+                    (if (eq (plist-get c :state) 'sent)
+                        (plist-put (copy-sequence c) :state 'addressed)
+                      c))
+                  (plist-get task :comments))))))
+
+(add-hook 'godel-status-stop-functions #'godel-review--on-stop)
+
+;;;; The review list
+
+(defvar-local godel-review--list-task nil "Task ID shown in this review list.")
+
+(defconst godel-review--list-groups
+  '(("Pending" pending) ("Sent" sent) ("Addressed" addressed) ("Outdated" outdated)))
+
+(defun godel-review--list-buffer-name (id) (format "*godel-review: %s*" id))
+
+(defvar-keymap godel-review-mode-map
+  :parent magit-section-mode-map
+  "RET" #'godel-review-list-visit
+  "C" #'godel-review-list-edit
+  "x" #'godel-review-list-delete
+  "s" #'godel-review-list-send
+  "g r" #'godel-review-list-refresh
+  "q" #'quit-window)
+
+(define-derived-mode godel-review-mode magit-section-mode "godel-review"
+  "A task's review comments: RET visit, C edit, x delete, s send."
+  (setq truncate-lines t)
+  (when (boundp '+indent-guides-inhibit-functions)
+    (add-hook '+indent-guides-inhibit-functions
+              (lambda () (derived-mode-p 'godel-review-mode)))))
+
+(with-eval-after-load 'evil
+  (evil-define-key* '(normal motion) godel-review-mode-map
+    (kbd "RET") #'godel-review-list-visit
+    "C" #'godel-review-list-edit
+    "x" #'godel-review-list-delete
+    "s" #'godel-review-list-send
+    "gr" #'godel-review-list-refresh
+    "q" #'quit-window))
+
+(defun godel-review--insert-comment (task c)
+  (let* ((s (plist-get c :start)) (e (plist-get c :end))
+         (where (format "%s:%s" (plist-get c :file) (if (= s e) s (format "%d-%d" s e)))))
+    (magit-insert-section (godel-comment (plist-get c :id))
+      (magit-insert-heading
+        (concat "  " (propertize where 'face 'magit-filename 'font-lock-face 'magit-filename)
+                "  " (car (split-string (plist-get c :text) "\n"))))
+      (dolist (line (split-string (or (godel-review--file-lines task (plist-get c :file) s e)
+                                      (plist-get c :anchor) "")
+                                  "\n"))
+        (insert (propertize (concat "      | " line "\n") 'face 'shadow 'font-lock-face 'shadow)))
+      (dolist (line (split-string (plist-get c :text) "\n"))
+        (insert "      " line "\n")))))
+
+(defun godel-review-list-refresh ()
+  "Redraw this review list."
+  (interactive)
+  (let* ((task (or (godel-task-get godel-review--list-task) (user-error "godel: task is gone")))
+         (inhibit-read-only t)
+         (line (line-number-at-pos)))
+    (godel-review-resolve-all (plist-get task :id))
+    (setq task (godel-task-get (plist-get task :id)))
+    (erase-buffer)
+    (magit-insert-section (godel-review-root)
+      (insert (propertize (format "Review of %s" (plist-get task :title))
+                          'font-lock-face 'magit-section-heading)
+              (propertize "    RET visit · C edit · x delete · s send pending\n\n"
+                          'font-lock-face 'shadow))
+      (unless (plist-get task :comments)
+        (insert "  No comments yet.  C in the task's diff (d) adds one.\n"))
+      (pcase-dolist (`(,label ,state) godel-review--list-groups)
+        (when-let* ((cs (godel-review-comments task (list state))))
+          (magit-insert-section (godel-comment-group state (memq state '(addressed outdated)))
+            (magit-insert-heading (format "%s (%d)" label (length cs)))
+            (dolist (c cs) (godel-review--insert-comment task c))
+            (insert "\n")))))
+    (magit-map-sections (lambda (s) (when (oref s hidden) (magit-section-hide s))))
+    (goto-char (point-min))
+    (forward-line (1- line))))
+
+(defun godel-review-list (task)
+  "Show TASK's review comments."
+  (let ((buffer (get-buffer-create (godel-review--list-buffer-name (plist-get task :id)))))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'godel-review-mode) (godel-review-mode))
+      (setq godel-review--list-task (plist-get task :id)
+            default-directory (plist-get task :worktree))
+      (godel-review-list-refresh))
+    (pop-to-buffer buffer)))
+
+(defun godel-review--list-comment ()
+  (let ((cid (or (magit-section-value-if 'godel-comment) (user-error "godel: no comment here"))))
+    (cl-find cid (plist-get (godel-task-get godel-review--list-task) :comments)
+             :key (lambda (c) (plist-get c :id)))))
+
+(defun godel-review-list-visit ()
+  "Open the commented file at the comment's line."
+  (interactive)
+  (let ((c (godel-review--list-comment))
+        (task (godel-task-get godel-review--list-task)))
+    (find-file-other-window (expand-file-name (plist-get c :file) (plist-get task :worktree)))
+    (goto-char (point-min))
+    (forward-line (1- (plist-get c :start)))))
+
+(defun godel-review-list-edit ()
+  "Edit the comment at point."
+  (interactive)
+  (let ((c (godel-review--list-comment))
+        (id godel-review--list-task))
+    (godel-compose (plist-get (godel-task-get id) :repo) 'comment
+                   (format "Edit comment on %s:%s" (plist-get c :file) (plist-get c :start))
+                   (lambda (text) (godel-review-update-comment id (plist-get c :id) :text text))
+                   (plist-get c :text))))
+
+(defun godel-review-list-delete ()
+  "Delete the comment at point."
+  (interactive)
+  (let ((c (godel-review--list-comment)))
+    (when (y-or-n-p (format "Delete the comment on %s:%s? " (plist-get c :file) (plist-get c :start)))
+      (godel-review-delete-comment godel-review--list-task (plist-get c :id)))))
+
+(defun godel-review-list-send ()
+  "Send the pending comments (after editing them as one message)."
+  (interactive)
+  (godel-review-send (godel-task-get godel-review--list-task)))
+
+(defun godel-review--refresh-lists (task change)
+  (unless (eq change 'deleted)
+    (when-let* ((buffer (get-buffer (godel-review--list-buffer-name (plist-get task :id)))))
+      (with-current-buffer buffer (godel-review-list-refresh)))))
+
+(add-hook 'godel-event-functions #'godel-review--refresh-lists)
+
+;;;; History
+
+(defun godel-review-history (task)
+  "Show the feedback rounds sent to TASK's author, newest first."
+  (let ((rounds (plist-get task :review-rounds)))
+    (unless rounds (user-error "godel: no feedback sent for %s yet" (plist-get task :id)))
+    (with-current-buffer (get-buffer-create (format "*godel-review-history: %s*" (plist-get task :id)))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (dolist (r (reverse rounds))
+          (insert (propertize (format "Round %d · %s\n" (plist-get r :round)
+                                      (format-time-string "%Y-%m-%d %H:%M" (plist-get r :time)))
+                              'face 'magit-section-heading)
+                  (plist-get r :text) "\n\n")))
+      (special-mode)
+      (goto-char (point-min))
+      (pop-to-buffer (current-buffer)))))
+
+;;;; Menu
+
+(defvar godel-review--menu-task nil "Task ID the open review menu acts on.")
+
+(defun godel-review--menu-target ()
+  (or (godel-task-get godel-review--menu-task) (user-error "godel: no task")))
+
+(transient-define-prefix godel-review-menu-prefix ()
+  "Review a godel task."
+  [:description (lambda () (format "Review %s" (plist-get (godel-review--menu-target) :title)))
+   ["Look"
+    ("d" "diff with comments" (lambda () (interactive) (godel-review-diff (godel-review--menu-target))))
+    ("l" "list comments" (lambda () (interactive) (godel-review-list (godel-review--menu-target))))
+    ("h" "feedback history" (lambda () (interactive) (godel-review-history (godel-review--menu-target))))]
+   ["Talk to the author"
+    ("s" "send pending comments" (lambda () (interactive) (godel-review-send (godel-review--menu-target))))]])
+
+;;;###autoload
+(defun godel-review-menu (&optional task)
+  "Open the review menu for TASK (default: the task this buffer belongs to)."
+  (interactive)
+  (let ((task (or task (godel-review--buffer-task)
+                  (and (derived-mode-p 'godel-review-mode) (godel-task-get godel-review--list-task))
+                  (user-error "godel: not in a task (use v on the board)"))))
+    (setq godel-review--menu-task (plist-get task :id))
+    (transient-setup 'godel-review-menu-prefix)))
 
 (provide 'godel-review)
 ;;; godel-review.el ends here

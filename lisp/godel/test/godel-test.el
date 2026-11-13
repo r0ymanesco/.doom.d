@@ -943,6 +943,79 @@ instance-name prompt bug): it waits for the first and gets its buffer."
               (should (= (length godel-comment--overlays) 1)))
           (kill-buffer buffer))))))
 
+(ert-deftest godel-test-feedback-text ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id)))
+      (godel-review-add-comment id "app.py" 4 5 "Why 20?")
+      (godel-review-add-comment id "new.txt" 1 1 "Needed?")
+      (let ((text (godel-review-feedback-text (godel-task-get id))))
+        (should (string-match-p "^1\\. `app.py` lines 4-5:\n```\ndef b():\n    return 20\n```\nWhy 20\\?" text))
+        (should (string-match-p "^2\\. `new.txt` line 1:\n```\nbrand new\n```\nNeeded\\?" text))))))
+
+(ert-deftest godel-test-feedback-send-flow ()
+  "v s: pending comments are sent as one message, then become addressed."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (sent nil))
+      (add-hook 'godel-status-stop-functions #'godel-review--on-stop)
+      (godel-task-update id :session-id "sid-fb")
+      (godel-review-add-comment id "app.py" 5 5 "Why 20?")
+      (cl-letf (((symbol-function 'godel-compose)
+                 (lambda (_repo _kind _header callback &optional initial _quote)
+                   (funcall callback (concat initial "Overall: looks close."))))
+                ((symbol-function 'godel-agent-ensure-session)
+                 (lambda (_task cb) (funcall cb (current-buffer))))
+                ((symbol-function 'godel-tui-wait)
+                 (lambda (_b _p _t cb) (funcall cb "screen")))
+                ((symbol-function 'godel-agent-send)
+                 (lambda (_task text) (setq sent text))))
+        (godel-review-send (godel-task-get id)))
+      (should (string-match-p "Why 20\\?" sent))
+      (should (string-match-p "Overall: looks close\\." sent))
+      (let ((c (car (plist-get (godel-task-get id) :comments))))
+        (should (eq (plist-get c :state) 'sent))
+        (should (= (plist-get c :round) 1)))
+      (should (= (length (plist-get (godel-task-get id) :review-rounds)) 1))
+      ;; Nothing pending now.
+      (should-error (godel-review-send (godel-task-get id)) :type 'user-error)
+      ;; The agent finishes its turn: addressed.
+      (godel-status-event "Stop" (godel-test-payload '((session_id . "sid-fb"))))
+      (should (eq (plist-get (car (plist-get (godel-task-get id) :comments)) :state) 'addressed)))))
+
+(ert-deftest godel-test-review-list ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id)))
+      (godel-review-add-comment id "app.py" 5 5 "Why 20?")
+      (godel-review-add-comment id "new.txt" 1 1 "Needed?")
+      (godel-review-update-comment id 2 :state 'sent)
+      (save-window-excursion
+        (godel-review-list (godel-task-get id))
+        (unwind-protect
+            (progn
+              (should (godel-test-text-order-p "Pending (1)" "app.py:5" "return 20" "Why 20?"
+                                               "Sent (1)" "new.txt:1"))
+              (goto-char (point-min))
+              (search-forward "app.py:5")
+              (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+                (godel-review-list-delete))
+              (should (= (length (plist-get (godel-task-get id) :comments)) 1)))
+          (kill-buffer (godel-review--list-buffer-name id)))))))
+
+(ert-deftest godel-test-review-history ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp)))
+      (should-error (godel-review-history task) :type 'user-error)
+      (godel-task-update (plist-get task :id) :review-rounds
+                         (list (list :round 1 :time 0 :text "first") (list :round 2 :time 1 :text "second")))
+      (save-window-excursion
+        (godel-review-history (godel-task-get (plist-get task :id)))
+        (with-current-buffer (format "*godel-review-history: %s*" (plist-get task :id))
+          (should (godel-test-text-order-p "Round 2" "second" "Round 1" "first"))
+          (kill-buffer))))))
+
 (ert-deftest godel-test-board-comment-summary ()
   (should-not (godel-board--comment-summary '(:comments nil)))
   (should (equal (godel-board--comment-summary

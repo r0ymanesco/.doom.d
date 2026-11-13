@@ -10,7 +10,8 @@
 ;;   RET  open the task's workspace     n  new task
 ;;   TAB  show details                  m  message the agent
 ;;   R    restart/resume (new model?)   x  tear down (keeps the branch)
-;;   d    diff with comments (C)        gr refresh
+;;   d    diff with comments (C)        v  review menu
+;;   gr   refresh
 ;;   q    quit (hides the sidebar)
 
 ;;; Code:
@@ -25,6 +26,7 @@
 
 (declare-function godel-new-task "godel-new" (&optional repo))
 (declare-function godel-review-diff "godel-review" (task))
+(declare-function godel-review-menu "godel-review" (&optional task))
 (declare-function godel-new--read-model "godel-new" (prompt initial history))
 (declare-function magit-status-setup-buffer "magit-status" (&optional directory))
 (declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide" (buffer))
@@ -126,6 +128,7 @@ board) removes plain `face' properties when it fontifies."
   "R" #'godel-board-restart
   "x" #'godel-board-teardown
   "d" #'godel-board-diff
+  "v" #'godel-board-review
   "g r" #'godel-board-refresh
   "q" #'godel-board-quit)
 
@@ -150,6 +153,7 @@ board) removes plain `face' properties when it fontifies."
     "R" #'godel-board-restart
     "x" #'godel-board-teardown
     "d" #'godel-board-diff
+    "v" #'godel-board-review
     "gr" #'godel-board-refresh
     "q" #'godel-board-quit))
 
@@ -497,6 +501,12 @@ workspace."
   (let ((task (godel-board--task)))
     (when godel-board--compact (select-window (window-main-window)))
     (godel-review-diff task)))
+
+(defun godel-board-review ()
+  "Open the review menu for the task at point."
+  (interactive)
+  (require 'godel-review)
+  (godel-review-menu (godel-board--task)))
 
 (defun godel-board-message ()
   "Send a message to the task's agent."

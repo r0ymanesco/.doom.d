@@ -20,6 +20,9 @@ Each gets the task and a flag: non-nil if the session reported the
 expected model.  godel-agent uses this to send the first prompt or to
 stop a session that started on the wrong model.")
 
+(defvar godel-status-stop-functions nil
+  "Functions called with a task ID when its agent finishes a turn (Stop).")
+
 (defvar godel-status--seq (make-hash-table :test #'equal)
   "Task ID -> number of events seen, to discard stale async results.")
 
@@ -107,6 +110,7 @@ hook must not disturb the session."
       ("Stop"
        (godel-task-update id :last-message (godel-status--truncate
                                             (alist-get 'last_assistant_message data) 200))
+       (run-hook-with-args 'godel-status-stop-functions id)
        (unless (eq (plist-get (godel-task-get id) :state) 'model-mismatch)
        (godel-status-check-changes
         id (lambda (changed stat)
