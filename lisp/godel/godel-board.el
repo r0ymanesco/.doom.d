@@ -28,7 +28,7 @@
 (declare-function godel-new-task "godel-new" (&optional repo))
 (declare-function godel-review-diff "godel-review" (task))
 (declare-function godel-review-menu "godel-review" (&optional task))
-(declare-function godel-ship "godel-ship" (task))
+(declare-function godel-ship "godel-ship" (task &optional draft))
 (declare-function godel-ship-browse-pr "godel-ship" (task))
 (declare-function godel-ship-pr-number "godel-ship" (task))
 (declare-function godel-ship-drafting "godel-ship" (task))
@@ -140,7 +140,8 @@ board) removes plain `face' properties when it fontifies."
   "x" #'godel-board-teardown
   "d" #'godel-board-diff
   "v" #'godel-board-review
-  "P" #'godel-board-ship
+  "P p" '("ship, open PR" . godel-board-ship)
+  "P d" '("ship, open draft PR" . godel-board-ship-draft)
   "i" #'godel-board-import
   "g p" #'godel-board-browse-pr
   "g r" #'godel-board-refresh
@@ -168,7 +169,8 @@ board) removes plain `face' properties when it fontifies."
     "x" #'godel-board-teardown
     "d" #'godel-board-diff
     "v" #'godel-board-review
-    "P" #'godel-board-ship
+    "Pp" '("ship, open PR" . godel-board-ship)
+    "Pd" '("ship, open draft PR" . godel-board-ship-draft)
     "i" #'godel-board-import
     "gp" #'godel-board-browse-pr
     "gr" #'godel-board-refresh
@@ -221,12 +223,12 @@ board) removes plain `face' properties when it fontifies."
     (plist-get (godel-task-by-slug (ignore-errors (+workspace-current-name))) :id)))
 
 (defun godel-board--pr-face (task)
-  "Face for TASK's PR marker: green while open, cyan once merged, red if
-closed without merging."
+  "Face for TASK's PR marker: green while open, grey while a draft, cyan
+once merged, red if closed without merging."
   (godel-board--state-face (pcase (godel-ship-pr-state task)
                              ('merged 'merged)
                              ('closed 'needs-attention)
-                             (_ 'needs-review))))
+                             (_ (if (plist-get task :pr-draft) 'stopped 'needs-review)))))
 
 (defun godel-board--icon (task)
   (let ((state (plist-get task :state)))
@@ -245,7 +247,7 @@ closed without merging."
                             (concat url (pcase (godel-ship-pr-state task)
                                           ('merged "  (merged)")
                                           ('closed "  (closed without merging)")
-                                          (_ ""))
+                                          (_ (if (plist-get task :pr-draft) "  (draft)" "")))
                                     (if godel-board--compact "" "   gp opens it"))))
                    ("comments" ,(godel-board--comment-summary task))
                    ("review" ,(plist-get task :review-note))
@@ -360,7 +362,7 @@ findings, or a failed one: until the review list has been opened."
                                 (length tasks) (if (= 1 (length tasks)) "" "s")
                                 (length repos) (if (= 1 (length repos)) "" "s"))
                         'magit-section-heading)
-            (godel-board--paint "      n new · RET open · m message · R restart · x tear down · gp open PR · gr refresh\n\n"
+            (godel-board--paint "      n new · RET open · m message · R restart · x tear down · P p/d ship (PR/draft) · gp open PR · gr refresh\n\n"
                         'godel-board-dim))))
 
 (defun godel-board--render ()
@@ -592,6 +594,12 @@ workspace."
   (interactive)
   (require 'godel-ship)
   (godel-ship (godel-board--task)))
+
+(defun godel-board-ship-draft ()
+  "Commit, push and open a draft PR for the task at point (author-drafted)."
+  (interactive)
+  (require 'godel-ship)
+  (godel-ship (godel-board--task) t))
 
 (defun godel-board-browse-pr ()
   "Open the pull request of the task at point in the browser."

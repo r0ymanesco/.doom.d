@@ -15,7 +15,9 @@
 ;;      until the draft arrives; the board row shows it too.  Cancelling
 ;;      (:q!) while it drafts stops the draft.
 ;;   3. `:wq' commits (if there are changes), pushes, and opens the PR with
-;;      `gh'.  The PR URL is saved on the task.  If the task already has a
+;;      `gh' (a draft PR with `godel-ship' DRAFT, P d on the board).  An
+;;      open PR that's a draft when you ship it as ready (or the other way
+;;      round) is marked ready (or converted to draft) after the push.  The PR URL is saved on the task.  If the task already has a
 ;;      PR, only the commit message is drafted and the push updates the PR.
 ;; Every git and gh command is logged in *godel-ship: ID*.  Afterwards, if
 ;; the author's session is running and idle, godel tells it what was
@@ -206,9 +208,14 @@ nil, or an error message naming the step that failed."
                                       (godel-ship--steps task (cdr steps) done))
                              (funcall done (format "%s failed; see %s" what (godel-ship--log task))))))))))
 
-(defun godel-ship-execute (task commit pr-title pr-body)
-  "Commit (with COMMIT if there are changes), push, and open a PR for TASK."
+(defun godel-ship-execute (task commit pr-title pr-body &optional draft)
+  "Commit (with COMMIT if there are changes), push, and open a PR for TASK.
+With DRAFT, a draft PR.  If TASK already has an open PR, make it a draft
+or ready to match DRAFT."
   (let* ((id (plist-get task :id))
+         (draft (and draft t))
+         (existing (godel-ship-open-pr task))
+         (toggle (and existing (not (eq draft (and (plist-get task :pr-draft) t)))))
          (dir (make-temp-file "godel-ship" t))
          (msg-file (expand-file-name "commit.txt" dir))
          (body-file (expand-file-name "pr.md" dir))
@@ -229,10 +236,15 @@ nil, or an error message naming the step that failed."
        ("pushing" . ,(lambda () (list "git" "push" "--set-upstream" godel-ship-remote
                                       (plist-get task :branch))))
        ("opening the PR" . ,(lambda () (and open-pr
-                                            (list godel-gh-program "pr" "create"
-                                                  "--base" (plist-get task :base)
-                                                  "--head" (plist-get task :branch)
-                                                  "--title" pr-title "--body-file" body-file)))))
+                                            (append
+                                             (list godel-gh-program "pr" "create"
+                                                   "--base" (plist-get task :base)
+                                                   "--head" (plist-get task :branch)
+                                                   "--title" pr-title "--body-file" body-file)
+                                             (when draft '("--draft"))))))
+       (,(if draft "converting the PR to draft" "marking the PR ready")
+        . ,(lambda () (and toggle (append (list godel-gh-program "pr" "ready" existing)
+                                          (when draft '("--undo")))))))
      (lambda (err)
        (delete-directory dir t)
        (if err
@@ -242,15 +254,19 @@ nil, or an error message naming the step that failed."
                          (string-match "https://[^ \t\n]+" godel-ship--last-output)
                          (match-string 0 godel-ship--last-output))))
            (apply #'godel-task-update id
-                  :last-event (cond (url (concat "PR opened: " url))
+                  :last-event (cond (url (concat (if draft "Draft PR opened: " "PR opened: ") url))
                                     (open-pr "pushed; PR created (no URL printed)")
+                                    (toggle (if draft "pushed; PR converted to draft"
+                                              "pushed; PR marked ready for review"))
                                     (t "pushed"))
-                  ;; A new PR replaces a closed or merged one; a merged task
-                  ;; is back under review.
-                  (when url
-                    `(:pr-url ,url :pr-state open
-                              ,@(when (eq (plist-get (godel-task-get id) :state) 'merged)
-                                  '(:state needs-review)))))
+                  (append
+                   ;; A new PR replaces a closed or merged one; a merged
+                   ;; task is back under review.
+                   (when url
+                     `(:pr-url ,url :pr-state open :pr-draft ,draft
+                               ,@(when (eq (plist-get (godel-task-get id) :state) 'merged)
+                                   '(:state needs-review))))
+                   (when toggle `(:pr-draft ,draft))))
            (godel-ship--tell-author (godel-task-get id) (and changes commit) (and url t))
            (message "godel: %s %s" id (if url (concat "PR opened: " url) "pushed"))))))))
 
@@ -264,7 +280,8 @@ pushed commit, OPENED non-nil if this ship opened the PR."
                 (format "I committed your changes as %s (\"%s\") and pushed %s to %s"
                         hash (car (split-string commit "\n")) (plist-get task :branch) godel-ship-remote)
               (format "I pushed %s (at %s) to %s" (plist-get task :branch) hash godel-ship-remote))
-            (cond ((and pr opened) (format ", and opened a pull request: %s." pr))
+            (cond ((and pr opened) (format ", and opened a %spull request: %s."
+                                           (if (plist-get task :pr-draft) "draft " "") pr))
                   (pr (format ", which updates the pull request %s." pr))
                   (t "."))
             " Reply with just \"Noted.\"")))
@@ -309,20 +326,25 @@ A ship with no open PR opens a new one."
   (format "⟳ The author is drafting the %s… %ds\n\n  It appears here when it's ready.  :q! cancels."
           what (round (- (float-time) start))))
 
-(defun godel-ship (task)
+(defun godel-ship (task &optional draft)
   "Draft (with the author), edit, then commit, push and open a PR for TASK.
-The compose buffer opens at once and shows the drafting's progress."
+With DRAFT, the PR is a draft (an open PR is converted to one).  The
+compose buffer opens at once and shows the drafting's progress."
   (let* ((id (plist-get task :id))
          (has-pr (godel-ship-open-pr task))
          (what (if has-pr "commit message" "commit message and PR"))
          (title (format "Ship %s: commit message%s" id
-                        (if has-pr (format ", then push to %s" has-pr)
-                          ", then the PR below the separator")))
+                        (cond ((not has-pr)
+                               (format ", then the %sPR below the separator" (if draft "draft " "")))
+                              ((not (eq (and draft t) (and (plist-get task :pr-draft) t)))
+                               (format ", then push to %s and %s" has-pr
+                                       (if draft "convert it to a draft" "mark it ready")))
+                              (t (format ", then push to %s" has-pr)))))
          (buffer (godel-compose
                   (plist-get task :repo) 'ship (concat title "   (drafting…)")
                   (lambda (text)
                     (pcase-let ((`(,commit ,title ,body) (godel-ship-split text)))
-                      (godel-ship-execute (godel-task-get id) commit title body)))))
+                      (godel-ship-execute (godel-task-get id) commit title body draft)))))
          (start (float-time))
          (timer nil))
     (godel-compose-wait buffer (godel-ship--wait-status what start))
@@ -349,31 +371,42 @@ The compose buffer opens at once and shows the drafting's progress."
 ;;;; Merged PRs
 
 (defun godel-ship-check-merged ()
-  "Ask gh about every task PR that isn't merged; save its state (`:pr-state').
-Merged moves the task to the `merged' state; closed (without merging) and
-reopened are noted on the task."
+  "Ask gh about every task PR that isn't merged; save its state (`:pr-state',
+`:pr-draft').  Merged moves the task to the `merged' state; closed (without
+merging), reopened, and draft <-> ready are noted on the task."
   (interactive)
   (dolist (task (godel-task-all))
     (when (and (memq (godel-ship-pr-state task) '(open closed))
                (executable-find godel-gh-program))
       (let ((id (plist-get task :id)))
         (godel-models--run
-         godel-gh-program (list "pr" "view" (plist-get task :pr-url) "--json" "state")
+         godel-gh-program (list "pr" "view" (plist-get task :pr-url) "--json" "state,isDraft")
          (lambda (_exit out)
-           (let* ((gh (ignore-errors
-                        (alist-get 'state (json-parse-string (string-trim out) :object-type 'alist))))
-                  (state (pcase gh ("OPEN" 'open) ("CLOSED" 'closed) ("MERGED" 'merged)))
-                  (task (godel-task-get id))
-                  (was (and task (godel-ship-pr-state task))))
-             (when (and task state (not (eq state (plist-get task :pr-state))))
-               (pcase state
-                 ('merged (godel-task-update id :pr-state 'merged :state 'merged
-                                             :last-event "PR merged"))
-                 ('closed (godel-task-update id :pr-state 'closed
-                                             :last-event "PR closed without merging"))
-                 ('open (if (eq was 'closed)
-                            (godel-task-update id :pr-state 'open :last-event "PR reopened")
-                          (godel-task-update id :pr-state 'open))))))))))))
+           (let* ((json (ignore-errors (json-parse-string (string-trim out) :object-type 'alist
+                                                          :false-object nil :null-object nil)))
+                  (state (pcase (alist-get 'state json)
+                           ("OPEN" 'open) ("CLOSED" 'closed) ("MERGED" 'merged)))
+                  (draft (and (alist-get 'isDraft json) t))
+                  (task (godel-task-get id)))
+             (when (and task state)
+               (godel-ship--note-pr-state task state draft)))))))))
+
+(defun godel-ship--note-pr-state (task state draft)
+  "Save what GitHub says about TASK's PR: STATE and whether it's a DRAFT."
+  (let* ((id (plist-get task :id))
+         (was (godel-ship-pr-state task))
+         (known-draft (plist-member task :pr-draft))
+         (was-draft (and (plist-get task :pr-draft) t))
+         (event (cond ((and (eq state 'merged) (not (eq was 'merged))) "PR merged")
+                      ((and (eq state 'closed) (not (eq was 'closed))) "PR closed without merging")
+                      ((and (eq state 'open) (eq was 'closed)) "PR reopened")
+                      ((and (eq state 'open) known-draft (not (eq draft was-draft)))
+                       (if draft "PR converted to draft" "PR marked ready for review")))))
+    (when (or (not (eq state (plist-get task :pr-state))) (not known-draft)
+              (not (eq draft was-draft)))
+      (apply #'godel-task-update id :pr-state state :pr-draft draft
+             (append (when (eq state 'merged) '(:state merged))
+                     (when event (list :last-event event)))))))
 
 (defvar godel-ship--timer nil)
 

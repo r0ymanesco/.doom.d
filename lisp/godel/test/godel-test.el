@@ -1260,15 +1260,17 @@ dropped."
         (funcall finish 0 "{}")
         (should-not called)))))
 
-(defun godel-test-fake-gh (dir url state)
-  "A fake gh in DIR: pr create prints URL and logs its args; pr view prints STATE."
+(defun godel-test-fake-gh (dir url state &optional draft)
+  "A fake gh in DIR: pr create prints URL and logs its args; pr view prints
+STATE (and isDraft, DRAFT)."
   (let ((gh (expand-file-name "gh" dir)) (log (expand-file-name "gh.log" dir)))
     (with-temp-file gh
       (insert "#!/bin/sh\n"
               "printf '%s\\n' \"$*\" >> " (shell-quote-argument log) "\n"
               "case \"$1 $2\" in\n"
               "  'pr create') echo " (shell-quote-argument url) " ;;\n"
-              "  'pr view') echo '{\"state\":\"" state "\"}' ;;\n"
+              "  'pr view') echo '{\"state\":\"" state "\",\"isDraft\":"
+              (if draft "true" "false") "}' ;;\n"
               "esac\n"))
     (set-file-modes gh #o755)
     (cons gh log)))
@@ -1382,7 +1384,7 @@ open again.  gr asks GitHub; a redraw on its own doesn't."
       (should (godel-test-wait (lambda () (eq (plist-get (godel-task-get id) :pr-state) 'closed)) 5))
       (should (eq (plist-get (godel-task-get id) :state) 'needs-review))
       (should (equal (plist-get (godel-task-get id) :last-event) "PR closed without merging"))
-      (should (eq (car (godel-board--pr-face (godel-task-get id))) 'godel-state-needs-attention))
+      (should (eq (godel-test-face-name (godel-board--pr-face (godel-task-get id))) 'godel-state-needs-attention))
       (should-not (godel-ship-open-pr (godel-task-get id)))
       (with-temp-buffer
         (godel-board--details (godel-task-get id) 8)
@@ -1392,7 +1394,7 @@ open again.  gr asks GitHub; a redraw on its own doesn't."
       (godel-ship-check-merged)
       (should (godel-test-wait (lambda () (eq (plist-get (godel-task-get id) :pr-state) 'open)) 5))
       (should (equal (plist-get (godel-task-get id) :last-event) "PR reopened"))
-      (should (eq (car (godel-board--pr-face (godel-task-get id))) 'godel-state-needs-review)))))
+      (should (eq (godel-test-face-name (godel-board--pr-face (godel-task-get id))) 'godel-state-needs-review)))))
 
 (ert-deftest godel-test-ship-after-closed-pr-opens-new ()
   "With the task's PR closed (or merged), shipping opens a new PR, which
@@ -1422,6 +1424,85 @@ becomes the task's PR; a merged task goes back to needs-review."
       (with-temp-buffer
         (insert-file-contents (cdr fake))
         (should (string-match-p "pr create" (buffer-string)))))))
+
+(defun godel-test-face-name (face)
+  "FACE's name: the face itself, or the first of a face list."
+  (if (consp face) (car face) face))
+
+(defun godel-test-ship-setup (task tmp)
+  "A local bare remote for TASK's repo and a committer in its worktree."
+  (let ((remote (expand-file-name "remote.git" tmp)))
+    (call-process "git" nil nil nil "init" "-q" "--bare" remote)
+    (let ((default-directory (plist-get task :repo)))
+      (call-process "git" nil nil nil "remote" "add" "origin" remote))
+    (let ((default-directory (plist-get task :worktree)))
+      (call-process "git" nil nil nil "config" "user.email" "t@t")
+      (call-process "git" nil nil nil "config" "user.name" "t"))))
+
+(ert-deftest godel-test-ship-draft-pr ()
+  "P d opens a draft PR; shipping it as ready later marks it ready, and
+the other way round converts it to a draft."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (fake (godel-test-fake-gh tmp "https://github.com/me/repo/pull/5" "OPEN" t))
+           (godel-gh-program (car fake))
+           (log (lambda () (with-temp-buffer (insert-file-contents (cdr fake)) (buffer-string))))
+           (done (lambda () (string-match-p "\\`\\(pushed\\|Draft PR opened\\|PR opened\\|.*failed\\)"
+                                            (or (plist-get (godel-task-get id) :last-event) "")))))
+      (godel-test-ship-setup task tmp)
+      (godel-ship-execute (godel-task-get id) "Change" "Title" "Body" t)
+      (should (godel-test-wait done 20))
+      (should (equal (plist-get (godel-task-get id) :last-event)
+                     "Draft PR opened: https://github.com/me/repo/pull/5"))
+      (should (plist-get (godel-task-get id) :pr-draft))
+      (should (string-match-p "pr create .* --draft" (funcall log)))
+      (should (eq (godel-test-face-name (godel-board--pr-face (godel-task-get id))) 'godel-state-stopped))
+      (with-temp-buffer
+        (godel-board--details (godel-task-get id) 8)
+        (should (string-match-p "pull/5  (draft)" (buffer-string))))
+      ;; Ship again as ready: push, then gh pr ready.
+      (with-temp-file (expand-file-name "more.txt" (plist-get task :worktree)) (insert "more\n"))
+      (godel-task-update id :last-event "")
+      (godel-ship-execute (godel-task-get id) "More" nil nil)
+      (should (godel-test-wait done 20))
+      (should (equal (plist-get (godel-task-get id) :last-event) "pushed; PR marked ready for review"))
+      (should-not (plist-get (godel-task-get id) :pr-draft))
+      (should (string-match-p "^pr ready https://github.com/me/repo/pull/5$" (funcall log)))
+      (should (eq (godel-test-face-name (godel-board--pr-face (godel-task-get id))) 'godel-state-needs-review))
+      ;; And back to draft.
+      (godel-task-update id :last-event "")
+      (godel-ship-execute (godel-task-get id) nil nil nil t)
+      (should (godel-test-wait done 20))
+      (should (equal (plist-get (godel-task-get id) :last-event) "pushed; PR converted to draft"))
+      (should (string-match-p "^pr ready https://github.com/me/repo/pull/5 --undo$" (funcall log)))
+      ;; Ship as draft again while it's a draft: no gh call.
+      (delete-file (cdr fake))
+      (godel-task-update id :last-event "")
+      (godel-ship-execute (godel-task-get id) nil nil nil t)
+      (should (godel-test-wait done 20))
+      (should (equal (plist-get (godel-task-get id) :last-event) "pushed"))
+      (should-not (file-exists-p (cdr fake))))))
+
+(ert-deftest godel-test-ship-check-draft ()
+  "The check picks up draft <-> ready changes made on GitHub."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id)))
+      (godel-task-update id :pr-url "https://github.com/me/repo/pull/7" :state 'needs-review)
+      (let ((godel-gh-program (car (godel-test-fake-gh tmp "unused" "OPEN" t))))
+        (godel-ship-check-merged)
+        (should (godel-test-wait (lambda () (plist-get (godel-task-get id) :pr-draft)) 5))
+        ;; The first look isn't news.
+        (should-not (equal (plist-get (godel-task-get id) :last-event) "PR converted to draft")))
+      (let ((godel-gh-program (car (godel-test-fake-gh tmp "unused" "OPEN" nil))))
+        (godel-ship-check-merged)
+        (should (godel-test-wait (lambda () (not (plist-get (godel-task-get id) :pr-draft))) 5))
+        (should (equal (plist-get (godel-task-get id) :last-event) "PR marked ready for review")))
+      (let ((godel-gh-program (car (godel-test-fake-gh tmp "unused" "OPEN" t))))
+        (godel-ship-check-merged)
+        (should (godel-test-wait (lambda () (plist-get (godel-task-get id) :pr-draft)) 5))
+        (should (equal (plist-get (godel-task-get id) :last-event) "PR converted to draft"))))))
 
 (ert-deftest godel-test-import-worktree ()
   (godel-test-with-env

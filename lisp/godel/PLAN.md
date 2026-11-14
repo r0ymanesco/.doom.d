@@ -17,7 +17,7 @@ Keys at a glance:
 | Task diff or file | `SPC G c` | Comment on the line or region |
 | Task diff or file | `SPC G x` | Delete the comment on the line (asks first) |
 | Task diff or file | `SPC G v` | Review menu for that task |
-| Board / sidebar | see Board | `RET` `TAB` `n` `m` `R` `x` `d` `v` `P` `i` `gp` `gr` `q` |
+| Board / sidebar | see Board | `RET` `TAB` `n` `m` `R` `x` `d` `v` `P p` `P d` `i` `gp` `gr` `q` |
 | Task diff | `C`, `gn` / `gp` | Comment; next / previous comment |
 | Review list | `RET` `C` `x` `a` `s` | Visit, edit, delete/drop, accept finding, send |
 | Compose buffer | `:wq` / `:q!` | Submit / cancel |
@@ -453,7 +453,8 @@ Keys (the same in the sidebar):
 | `x` | Tear down: warn about uncommitted or unpushed work, stop the session, close the workspace, run the teardown script, remove the worktree, keep the branch, forget the task |
 | `d` | The task's diff with comments (see Review) |
 | `v` | Review menu (see Review) |
-| `P` | Ship (see Ship) |
+| `P p` | Ship: commit, push, open a PR (see Ship) |
+| `P d` | Ship with a draft PR |
 | `gp` | Open the task's PR in the browser |
 | `i` | Import an existing worktree of the repo at point |
 | `gr` | Refresh |
@@ -585,6 +586,7 @@ author), `godel-reviewer.el` (independent reviewer), `godel-ship.el`.
 | `r` / `R` | Structured review on Not Diamond / on a model you pick |
 | `w` / `W` | Walkthrough on Not Diamond / on a model you pick |
 | `P` | Ship |
+| `D` | Ship with a draft PR |
 | `o` | Open the PR in the browser |
 
 ### Diff
@@ -751,7 +753,10 @@ so the task's state doesn't change. Default model: Not Diamond
   - Unlike headless runs, it leaves a normal transcript in the worktree's
     Claude history.
 
-### Ship (`P`)
+### Ship (`P p`, `P d`)
+
+`P p` opens a PR, `P d` a **draft** PR (`gh pr create --draft`); in the
+review menu, `P` and `D`.
 
 1. **Draft.** The author drafts the commit message and PR description from
    its own conversation: a headless run of a **fork** of its session
@@ -789,7 +794,8 @@ so the task's state doesn't change. Default model: Not Diamond
    it can collide with what you're typing.)
 
 **Finding the PR:** the board row shows `#<number>` after the title (green,
-cyan once merged, red if closed without merging), the sidebar row a `⇡`
+grey while a draft, cyan once merged, red if closed without merging), the
+sidebar row a `⇡`
 in the same colours (next to the
 review badge, two columns taken from the title); `TAB` shows a `PR` line
 with the URL; `gp` on a board or sidebar row, or `o` in the review menu
@@ -801,6 +807,11 @@ every `godel-ship-check-interval` seconds (default 300) while `godel-mode`
 is on. The state is saved as `:pr-state` (`open`, `closed`, `merged`).
 - **Merged** moves the task to **merged** (cyan). Merged tasks aren't torn
   down automatically.
+- **Draft:** the check also reads `isDraft` (`:pr-draft`). An open draft
+  draws the marker grey and the `PR` line says "(draft)". Changing it on
+  GitHub is noted ("PR marked ready for review", "PR converted to draft").
+  Shipping onto an open PR matches the key: `P p` on a draft pushes, then
+  `gh pr ready`; `P d` on a ready PR pushes, then `gh pr ready --undo`.
 - **Closed without merging** leaves the task's state alone, notes "PR
   closed without merging", and draws the PR marker red (`#N` on the board,
   `⇡` in the sidebar, "(closed without merging)" on the `PR` line).

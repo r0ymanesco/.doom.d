@@ -628,7 +628,7 @@ C edit, x delete, s send)."
 (declare-function godel-reviewer-run "godel-reviewer" (task &optional model))
 (declare-function godel-reviewer-walkthrough "godel-reviewer" (task &optional model))
 (declare-function godel-reviewer--read-model "godel-reviewer" ())
-(declare-function godel-ship "godel-ship" (task))
+(declare-function godel-ship "godel-ship" (task &optional draft))
 
 (defun godel-review--insert-finding (task f)
   (let* ((s (plist-get f :start)) (e (plist-get f :end))
@@ -839,6 +839,8 @@ C edit, x delete, s send)."
    ["Ship"
     ("P" "commit, push, open PR" (lambda () (interactive) (require 'godel-ship)
                                   (godel-ship (godel-review--menu-target))))
+    ("D" "commit, push, open draft PR" (lambda () (interactive) (require 'godel-ship)
+                                         (godel-ship (godel-review--menu-target) t)))
     ("o" "open the PR in the browser" (lambda () (interactive) (require 'godel-ship)
                                         (godel-ship-browse-pr (godel-review--menu-target))))]])
 
