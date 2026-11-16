@@ -1280,6 +1280,7 @@ STATE (and isDraft, DRAFT)."
 the author's (running) session what was shipped."
   (let (sent)
   (cl-letf (((symbol-function 'godel-agent-live-p) (lambda (_) t))
+            ((symbol-function 'godel-tui-wait) (lambda (_b _p _t cb) (funcall cb "ready")))
             ((symbol-function 'godel-agent-send) (lambda (_ text) (push text sent))))
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp))
@@ -1327,6 +1328,47 @@ the author's (running) session what was shipped."
                      (godel-task--git (plist-get task :worktree) "rev-parse" "HEAD")))
       (with-temp-file (expand-file-name "x.txt" (plist-get task :worktree)) (insert "x\n"))
       (should-error (godel-ship-execute (godel-task-get id) nil nil nil) :type 'user-error))))))
+
+(ert-deftest godel-test-ship-note-hooks-registered ()
+  (should (memq #'godel-ship--on-session-start godel-status-session-start-functions))
+  (should (memq #'godel-ship--on-stop godel-status-stop-functions)))
+
+(ert-deftest godel-test-ship-note-waits-for-session ()
+  "A note for an author whose session isn't running (or is busy) is kept
+and sent when the session starts or finishes a turn, once."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (live nil) sent)
+      (cl-letf (((symbol-function 'godel-agent-live-p) (lambda (_) live))
+                ((symbol-function 'godel-tui-wait) (lambda (_b _p _t cb) (funcall cb "ready")))
+                ((symbol-function 'godel-agent-send) (lambda (_ text) (push text sent)))
+                ((symbol-function 'run-with-timer)
+                 (lambda (_secs _repeat fn &rest args) (apply fn args))))
+        (godel-task-update id :state 'needs-review :pr-url "https://github.com/me/repo/pull/3")
+        ;; Not running: kept.
+        (godel-ship--tell-author (godel-task-get id) "Subject" t)
+        (should-not sent)
+        (should (string-match-p "pull/3" (plist-get (godel-task-get id) :ship-note)))
+        ;; The session starts (resumed): delivered, and only once.
+        (setq live t)
+        (godel-ship--on-session-start (godel-task-get id) t)
+        (should (= (length sent) 1))
+        (should-not (plist-get (godel-task-get id) :ship-note))
+        (run-hook-with-args 'godel-status-stop-functions id)
+        (should (= (length sent) 1))
+        ;; Busy: kept until the turn ends.
+        (godel-task-update id :state 'working)
+        (godel-ship--tell-author (godel-task-get id) "Again" nil)
+        (should (= (length sent) 1))
+        (run-hook-with-args 'godel-status-stop-functions id)
+        (should (= (length sent) 2))
+        (should (string-match-p "\"Again\"" (car sent)))
+        ;; Waiting on a permission prompt: not interrupted.
+        (godel-task-update id :state 'needs-attention)
+        (godel-ship--tell-author (godel-task-get id) "Third" nil)
+        (should (= (length sent) 2))
+        (should (plist-get (godel-task-get id) :ship-note))))))
 
 (ert-deftest godel-test-ship-pr-display ()
   "The PR shows on the board row (#N) and in its details; gp opens it."

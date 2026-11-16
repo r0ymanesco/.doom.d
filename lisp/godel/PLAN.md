@@ -784,12 +784,16 @@ review menu, `P` and `D`.
    ...` unless a PR exists. The PR URL is saved on the task. Every command
    and its output go to `*godel-ship: <id>*`; a failure stops there and is
    shown on the board.
-4. **Tell the author.** If the author's session is running and not busy,
-   godel sends it a note: "For your information, no action needed: I
+4. **Tell the author.** godel sends the author's session a note: "For your information, no action needed: I
    shipped this task… committed <hash> ("<subject>"), pushed <branch>…,
    opened a pull request: <url>" (or "which updates the pull request"),
    asking for a one-word reply. So if you keep working with it, it knows
-   what was shipped. (Drafting in the live session instead was considered
+   what was shipped. If the session isn't running (e.g. right after an
+   Emacs restart) or is busy, the note is kept on the task (`:ship-note`)
+   and sent when the session next starts or finishes a turn, once its input
+   box is ready; not while it's waiting on you or stopped for the wrong
+   model. A newer ship's note replaces an undelivered one. Tested live: a
+   kept note reached a session as it started, which answered "Noted." (Drafting in the live session instead was considered
    and dropped: the session must be idle, read-only can't be enforced, and
    it can collide with what you're typing.)
 

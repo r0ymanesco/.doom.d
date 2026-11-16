@@ -19,9 +19,10 @@
 ;;      open PR that's a draft when you ship it as ready (or the other way
 ;;      round) is marked ready (or converted to draft) after the push.  The PR URL is saved on the task.  If the task already has a
 ;;      PR, only the commit message is drafted and the push updates the PR.
-;; Every git and gh command is logged in *godel-ship: ID*.  Afterwards, if
-;; the author's session is running and idle, godel tells it what was
-;; shipped (commit, PR URL), so it knows if you keep working with it.
+;; Every git and gh command is logged in *godel-ship: ID*.  Afterwards godel
+;; tells the author's session what was shipped (commit, PR URL), so it
+;; knows if you keep working with it: at once if the session is running and
+;; idle, otherwise when it next starts or finishes a turn (`:ship-note').
 ;; `godel-ship-browse-pr' opens a task's PR (gp on the board, o in v).
 ;;
 ;; `godel-ship-check-merged' asks gh about tasks' PRs; a merged PR moves
@@ -287,13 +288,48 @@ pushed commit, OPENED non-nil if this ship opened the PR."
             " Reply with just \"Noted.\"")))
 
 (defun godel-ship--tell-author (task commit opened)
-  "Tell TASK's author what was shipped, if its session is running and idle."
-  (when (and (godel-agent-live-p task)
-             (not (memq (plist-get task :state) '(working setting-up))))
-    (let ((hash (string-trim (or (godel-task--git (plist-get task :worktree)
-                                                  "rev-parse" "--short" "HEAD")
-                                 ""))))
-      (godel-agent-send task (godel-ship-note task commit hash opened)))))
+  "Tell TASK's author what was shipped: now if its session is running and
+idle, else keep the note on the task for `godel-ship--deliver-note'."
+  (let* ((hash (string-trim (or (godel-task--git (plist-get task :worktree)
+                                                 "rev-parse" "--short" "HEAD")
+                                "")))
+         (id (plist-get task :id)))
+    ;; A newer note replaces an undelivered one: it has the latest commit
+    ;; and PR.
+    (godel-task-update id :ship-note (godel-ship-note task commit hash opened))
+    (unless (memq (plist-get task :state) '(working))
+      (godel-ship--deliver-note id))))
+
+(defun godel-ship--deliver-note (id &optional after-stop)
+  "Send task ID's undelivered ship note once its session is ready for input.
+Not to a session stopped for the wrong model, one waiting on you, or (unless
+AFTER-STOP, when its turn just ended) one that's working."
+  (let ((task (godel-task-get id)))
+    (when (and task (plist-get task :ship-note) (godel-agent-live-p task)
+               (not (memq (plist-get task :state)
+                          (append '(setting-up model-mismatch needs-attention)
+                                  (unless after-stop '(working))))))
+      (godel-tui-wait (godel-agent-buffer task) #'godel-tui-input-ready-p 30
+                      (lambda (text)
+                        (let* ((task (godel-task-get id))
+                               (note (and task (plist-get task :ship-note))))
+                          (when (and text note)
+                            (godel-task-update id :ship-note nil)
+                            (godel-agent-send task note))))))))
+
+(defun godel-ship--on-session-start (task ok)
+  "Deliver an undelivered ship note to a session that just started."
+  (when (and ok (plist-get task :ship-note))
+    ;; After godel's own start-up handling (model check, first prompt).
+    (run-with-timer 2 nil #'godel-ship--deliver-note (plist-get task :id))))
+
+(defun godel-ship--on-stop (id)
+  "Deliver an undelivered ship note when task ID's agent finishes a turn."
+  (when (plist-get (godel-task-get id) :ship-note)
+    (run-with-timer 1 nil #'godel-ship--deliver-note id t)))
+
+(add-hook 'godel-status-session-start-functions #'godel-ship--on-session-start)
+(add-hook 'godel-status-stop-functions #'godel-ship--on-stop)
 
 (defun godel-ship-pr-state (task)
   "TASK's PR state as godel last saw it: `open', `closed', `merged', or nil
