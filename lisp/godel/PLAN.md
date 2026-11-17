@@ -1,9 +1,16 @@
 # godel: an agent development environment for Emacs
 
-Status (2026-11-13): Phase 0 (spike) done, findings in `SPIKE.md`. Phase 1
+Status (2026-11-17): Phase 0 (spike) done, findings in `SPIKE.md`. Phase 1
 (MVP), Phase 1.1 (board by repo, sidebar) and Phase 2 (review and ship)
-built; the sections below describe what is built, and "Not built" notes mark
-what isn't yet. Phases 3 and 4 are planned. Written 2026-11-10.
+built, with the follow-ups listed under Phases. The sections below describe
+what is built; "Not built" notes mark what isn't. Written 2026-11-10.
+
+Related documents:
+- `MANUAL.md`: how to use godel.
+- `REMOTE-PLAN.md`: the next step, running the agents on an always-on host
+  so they don't depend on the laptop (replaces the old Phase 3). Mobile
+  access is part of it.
+- `SPIKE.md`: Phase 0 findings and measurements.
 
 Keys at a glance:
 
@@ -54,7 +61,8 @@ hooks, the board, and the review loop.
 | Board keys | Teardown is `x`, refresh `gr` (`k` is evil's "up") |
 | Diff scope | Working tree, uncommitted and untracked changes included, against the merge base with the task's base branch |
 | Reviewer | Not Diamond by default, model selectable; reviewers never report as the task |
-| Ship | The author drafts the commit message and PR from a fork of its session; you edit; godel commits, pushes, runs `gh pr create` |
+| Ship | The author drafts the commit message and PR from a fork of its session; you edit; godel commits, pushes, runs `gh pr create` (`--draft` with `P d`); one tracked PR per task |
+| Remote and mobile | Planned separately in `REMOTE-PLAN.md`: agents on an always-on host, the laptop and phone as clients |
 
 ## Core rules
 
@@ -71,7 +79,7 @@ hooks, the board, and the review loop.
 5. **Everything has an API.** Every action is a `godel-api-*` function that
    takes a task ID. Every state change goes through
    `godel-event-functions`. That keeps the board, notifications and future
-   frontends (Slack, web, phone) pluggable.
+   frontends (a laptop client, a phone; see `REMOTE-PLAN.md`) pluggable.
 
 ## Architecture
 
@@ -140,14 +148,19 @@ lisp/godel/
  :findings ((:id 1 :file "app.py" :start 5 :end 5 :severity "high"
              :text "..." :state proposed :created ...))   ; proposed|accepted|dropped
  :finding-seq 1 :review-status done :review-note "1 finding"
+ :review-started 1794... :review-activity "Grep(foo)" :review-seen nil
  :review-rounds ((:round 1 :time ... :text "the feedback sent"))
  ;; ship
- :pr-url "https://github.com/.../pull/7")
+ :pr-url "https://github.com/.../pull/7" :pr-state open  ; open|closed|merged
+ :pr-draft nil :ship-note nil)   ; ship-note: kept until the author can take it
 ```
 
 States: `setting-up`, `needs-attention`, `model-mismatch`, `working`,
-`needs-review`, `idle`, `stopped`, `merged`. Not built: `:group` (fan-out,
-Phase 4).
+`needs-review`, `idle`, `stopped`, `merged`.
+
+Changes to the review progress and PR fields (`godel-task--quiet-props`)
+don't count as the task being updated, so they don't reset the board's age
+column.
 
 Stored per repo in `$(git rev-parse --git-common-dir)/godel/tasks.eld`. Every
 worktree shares that directory and git never commits it. Drafts go in
@@ -196,8 +209,8 @@ on `RET` (board or sidebar) and on any switch to the task's workspace. The
 task keeps its state: a needs-review task stays needs-review (`:resume-state`,
 restored at `SessionStart`); stopped tasks come back idle. Not resumed
 automatically: model-mismatch tasks (use `R`), tasks still starting, tasks
-whose session never started, and tasks whose worktree is gone. (Rebuilding from transcripts only
-matters once sessions outlive Emacs, with the Phase 3 tmux backend.)
+whose session never started, and tasks whose worktree is gone. (Sessions
+that outlive Emacs are the subject of `REMOTE-PLAN.md`.)
 Every state change runs `godel-event-functions`. That hook updates the store,
 redraws the board (debounced to about 200ms) and the tab bar, and sends a
 desktop notification (`notifications-notify`) on needs-attention and
@@ -374,9 +387,7 @@ Launch steps:
 `R` (restart/resume) relaunches with `--resume <session-id>` and the
 environment for the newly chosen model, so changing the model or effort
 mid-task needs no interaction with the TUI. Switching a task from a pinned
-model to Not Diamond relaunches without the pin variables, as above. Fan-out
-attempts each get their own environment, so a group can mix Not Diamond and
-pinned attempts.
+model to Not Diamond relaunches without the pin variables, as above.
 
 **Pin check (`godel-models-check-pin`).** The pin is an internal wrapper
 feature, so godel tests it whenever the model list refreshes (when Claude
@@ -400,12 +411,9 @@ API). Not Diamond keeps working.
 was considered and dropped (2026-11-12): it only helps in the case the pin
 check already reports, it's screen-reading code that would rarely run, and
 one wrong key there changes the user's default model. If the pin breaks, the
-fix belongs in the wrapper (keep the pin, or add a supported flag). godel opens `/model`, finds the
-target row and the `❯` cursor row on screen, sends the exact number of
-Up/Down presses (the menu wraps), checks the cursor is on the target, and
-presses `s` (this session only). `PreModelSwitch` confirms the switch. If that
-fails too, the board marks the task **model mismatch**. godel never uses
-`/model X` or `/effort X`: both save the user's default for all new sessions.
+fix belongs in the wrapper (keep the pin, or add a supported flag). godel
+never uses `/model X` or `/effort X`: both save the user's default for all
+new sessions.
 
 **Defaults and overrides.**
 - Defaults: `godel-default-model` (Not Diamond), `godel-default-effort`,
@@ -424,22 +432,27 @@ inside each repo. Empty state groups are hidden. Repo headings show the path
 and a count per state, so a collapsed repo still shows whether it needs you.
 
 ```
-godel · 5 tasks in 2 repos      n new · RET open · m message · R restart · x tear down · gr refresh
+godel · 5 tasks in 2 repos      n new · RET open · m message · R restart · x tear down · P p/d ship (PR/draft) · gp open PR · gr refresh
 
-▾ doom  ~/.config/doom                                                    ●1 ◐1 ✓1
+▾ doom  ~/.config/doom                                                         ●1 ◐1 ✓1
     Needs attention (1)
-      ● Fix ivy multi-select     Opus/high      permission: Bash(npm test)      3m
+      ● Fix ivy multi-select           Opus/high      permission: Bash(npm test)              3m
     Working (1)
-      ◐ Add tab badges           Not Diamond    Edit(config.el)                 1m
+      ◐ Add tab badges                 Not Diamond    Edit(config.el)   ⟳ reviewing 18s · Grep 1m
     Needs review (1)
-      ✓ Hello file               Haiku/low      1 file changed, 2 untracked     5m
+      ✓ Hello file               #12   Haiku/low      PR opened: https://github.com/…         5m
 
-▾ notdiamond-code-proxy  ~/code/notdiamond-code-proxy                        ◐1 ○1
+▾ notdiamond-code-proxy  ~/code/notdiamond-code-proxy                             ◐1 ○1
     Working (1)
-      ◐ Retry 429s               Sonnet/high    Bash(go test ./...)            30s
+      ◐ Retry 429s                     Sonnet/high    Bash(go test ./...)                    30s
     Idle (1)
-      ○ Bump deps                Not Diamond    Done.                           2h
+      ○ Bump deps                      Not Diamond    Done.                                   2h
 ```
+
+Columns: state icon, title, the PR number if the task has one (coloured by
+the PR's state, see Ship), model, the last event, a badge (independent
+review progress or findings, see Independent reviewer; or a ship draft in
+progress, see Ship), and the time since the task last changed.
 
 Keys (the same in the sidebar):
 
@@ -462,8 +475,7 @@ Keys (the same in the sidebar):
 
 `TAB` on a repo heading collapses it (remembered across refreshes).
 
-Not built: `F` fan-out, the group keys `c` / `w` / `J` (Phase 4), and a
-`/` filter.
+Not built: a `/` filter. (Fan-out and its group keys are under Later ideas.)
 
 **The board has its own workspace.** `SPC G a` switches to a Doom workspace
 named **Godel** (`godel-board-workspace`), creating it with the board on
@@ -496,7 +508,8 @@ that's why the icons first showed up white.
 The same board in a narrow window on the left, with the same keys. Compact
 rows: no state sub-headings; within a repo, tasks are in state order and the
 icon shows the state. The task whose workspace you're in is marked `▶`; tasks
-that need you get a second line with the reason.
+that need you get a second line with the reason. After the title, a review
+badge's icon and a `⇡` for a PR (coloured like the board's `#N`).
 
 ```
  godel                ●1 ◐2 ✓1
@@ -536,8 +549,8 @@ that need you get a second line with the reason.
    asking you), the model is checked, and the prompt is sent; the task
    becomes *working*.
 
-Not built: `-n` attempts (fan-out, Phase 4) and file completion for `@`
-mentions in the compose buffer.
+Not built: file completion for `@` mentions in the compose buffer. (Several
+attempts per prompt is fan-out, under Later ideas.)
 
 ### Compose buffers: submit and cancel
 
@@ -745,11 +758,10 @@ so the task's state doesn't change. Default model: Not Diamond
     (`claude-code-ide-emacs-tools-setup`); godel says so if it's off. Until
     claude-code-ide answers Claude's `server/discover` probe, the tools
     connect a few seconds after the session starts (Claude waits).
-  - Tested with a real walkthrough: no prompts; it added two comments on its
-    own (a missing space, `== None`) and a third when asked in the chat.
-  - Tested with a real walkthrough: it highlighted the hunk beside the
-    chat, with no prompts and no timeouts. There's no tool to delete
-    comments: that's the review list's `x` or `SPC G x`.
+  - Tested with real walkthroughs: no prompts and no timeouts; it
+    highlighted each hunk beside the chat, added two comments on its own (a
+    missing space, `== None`) and a third when asked in the chat. There's no
+    tool to delete comments: that's the review list's `x` or `SPC G x`.
   - Unlike headless runs, it leaves a normal transcript in the worktree's
     Claude history.
 
@@ -784,8 +796,9 @@ review menu, `P` and `D`.
    ...` unless a PR exists. The PR URL is saved on the task. Every command
    and its output go to `*godel-ship: <id>*`; a failure stops there and is
    shown on the board.
-4. **Tell the author.** godel sends the author's session a note: "For your information, no action needed: I
-   shipped this task… committed <hash> ("<subject>"), pushed <branch>…,
+4. **Tell the author.** godel sends the author's session a note: "For your
+   information, no action needed: I shipped this task… committed <hash>
+   ("<subject>"), pushed <branch>…,
    opened a pull request: <url>" (or "which updates the pull request"),
    asking for a one-word reply. So if you keep working with it, it knows
    what was shipped. If the session isn't running (e.g. right after an
@@ -793,15 +806,15 @@ review menu, `P` and `D`.
    and sent when the session next starts or finishes a turn, once its input
    box is ready; not while it's waiting on you or stopped for the wrong
    model. A newer ship's note replaces an undelivered one. Tested live: a
-   kept note reached a session as it started, which answered "Noted." (Drafting in the live session instead was considered
-   and dropped: the session must be idle, read-only can't be enforced, and
-   it can collide with what you're typing.)
+   kept note reached a session as it started, which answered "Noted."
+   (Drafting in the live session instead was considered and dropped: the
+   session must be idle, read-only can't be enforced, and it can collide
+   with what you're typing.)
 
 **Finding the PR:** the board row shows `#<number>` after the title (green,
 grey while a draft, cyan once merged, red if closed without merging), the
-sidebar row a `⇡`
-in the same colours (next to the
-review badge, two columns taken from the title); `TAB` shows a `PR` line
+sidebar row a `⇡` in the same colours (next to the review badge, two
+columns taken from the title); `TAB` shows a `PR` line
 with the URL; `gp` on a board or sidebar row, or `o` in the review menu
 (`SPC G v`), opens it in the browser (`godel-ship-browse-pr`).
 
@@ -827,9 +840,9 @@ is on. The state is saved as `:pr-state` (`open`, `closed`, `merged`).
   opened outside godel (github.com, or the author running `gh`) aren't
   tracked.
 
-Tested against GitHub: a real ship opened a PR (also covered by tests
-with a local bare remote and a fake `gh`). Merged detection not yet seen
-for real.
+Confirmed against GitHub by the user (2026-11-16): opening PRs and draft
+PRs, marking ready, and the state checks. Also covered by tests with a local
+bare remote and a fake `gh`.
 
 ## Worktree lifecycle
 
@@ -838,8 +851,7 @@ for real.
 - Setup and teardown scripts come from `.godel.toml` in the repo. If the file
   doesn't exist, no scripts run.
 - Teardown warns about uncommitted or unpushed work, runs the teardown script,
-  removes the worktree and keeps the branch (fan-out cleanup asks whether to
-  delete the branches).
+  removes the worktree and keeps the branch.
 - **Import** (`i` on the board, `SPC G i`): lists the repo's worktrees that
   aren't tasks yet, skipping the main checkout, detached worktrees and
   Paradev's (`godel-import-exclude-regexp`, `/.paradev/` paths); asks for
@@ -864,8 +876,8 @@ Measured in Phase 0 (Doom in terminal mode, see `SPIKE.md`):
   debounced.
 - **git and setup scripts:** always run asynchronously.
 
-So performance doesn't require the tmux backend; it's only for durability
-(Phase 3). GUI Emacs hasn't been measured.
+So performance doesn't need tmux; the tmux backend in `REMOTE-PLAN.md` is
+for running agents on a host. GUI Emacs hasn't been measured.
 
 ## Phases
 
@@ -986,7 +998,7 @@ and Worktree lifecycle. Decisions made for it (2026-11-13):
   session is untouched); you edit the draft in a compose buffer; `:wq`
   commits, pushes and opens the PR with `gh`. A new **merged** state is
   set when `gh` reports the PR merged.
-- `J` (judge) moves to Phase 4 with fan-out.
+- `J` (judge) moves to the fan-out idea (see Later ideas).
 - Built in steps: diff and comments; feedback loop; ask the author;
   independent reviewer; ship; import an existing worktree.
 
@@ -1004,38 +1016,50 @@ local bare remote and a fake `gh`). Learned on the way:
 - magit's diff keys are text-property section keymaps, which beat every
   evil and minor-mode map; godel makes magit's `C` binding conditional
   instead (`magit-diff-section-map`).
-- The walkthrough doesn't reliably open files in Emacs: with one small
-  hunk the model explained everything at once.
+- The walkthrough didn't reliably open files in Emacs: its prompt named
+  claude-code-ide's `openFile`, which the model can't call. Fixed later
+  with `godel_show_location` (see Phase 2 follow-ups).
 - An interactive walkthrough leaves a normal transcript in the worktree's
   history; headless reviews and ship drafts leave none.
 
-**Phase 3: durability.** On startup, offer `--resume <session-id>` for tasks
-that were running. Optional tmux backend so agents keep running when Emacs
-closes.
+**Phase 2 follow-ups.** Built 2026-11-13 to 2026-11-16 from GUI use, each
+tested in Doom with real sessions where it touches Claude (84 ERT tests at
+the end):
+- Comments: drawn under their line with a coloured bar so `j` moves past
+  them and they stay readable (and not covered by indent guides);
+  `SPC G x` deletes one.
+- Independent review progress on the board (badge with elapsed time and
+  the reviewer's current tool), and a notification when done.
+- The walkthrough records comments (`godel_add_comment`,
+  `godel_list_comments`, on its own and when asked) and shows each hunk in
+  Emacs (`godel_show_location`).
+- Ship: the compose buffer opens at once with drafting progress, plus a
+  board badge; the PR shows on the board (`#N`), sidebar (`⇡`) and `TAB`
+  details, `gp` / `o` open it; PR state tracking (open, draft, closed,
+  merged) on board open, `gr` and a timer; `P p` / `P d` for PR or draft,
+  matching an existing PR's draft state; a new PR after a closed or merged
+  one; a note to the author after each ship, kept until its session can
+  take it.
 
-**Phase 4: extras.** Fan-out groups with compare/winner/judge, a port list
-(`ss -ltnp` per task process tree), Linear issue -> task, scheduled tasks,
-remote hosts through `remote-sync.el`.
+**Next: remote host.** See `REMOTE-PLAN.md`. It replaces the old Phase 3
+(a local tmux backend) and includes mobile access.
 
-## Mobile (later, not planned)
-
-Possible because of the API and event hook. Options, from least to most
-effort:
-1. **ntfy.sh push + SSH.** One more function on `godel-event-functions` sends
-   the push; reply by attaching to the tmux session over Tailscale. Needs the
-   Phase 3 tmux backend.
-2. **Slack.** One thread per task. A Socket Mode bot (no public URL) calls
-   `godel-api-*` through `emacsclient`. Downside: code ends up in Slack.
-3. **Web app** reachable only over Tailscale: board, task log, rendered diff,
-   reply box. The most work, and the only option where reviewing diffs on a
-   phone is pleasant.
-Also check whether Claude Code's own Remote Control works through
-`notdiamond-claude`.
+**Later ideas (not planned):**
+- **Fan-out:** start several attempts at one prompt (different models or
+  efforts, each its own task), then compare them, pick a winner, or have a
+  judge model choose. Each attempt gets its own launch environment, so a
+  group can mix Not Diamond and pinned attempts. Board keys were sketched
+  as `F` (fan out), `c` / `w` / `J` (compare, winner, judge).
+- **Port list:** show the ports each task's processes listen on (`ss
+  -ltnp` over the task's process tree), since worktrees don't isolate
+  ports.
+- **Linear issue → task:** start a task from an issue.
+- **Scheduled tasks.**
 
 ## Out of scope
 
-Chat view, in-app browser, design mode, cloud workspaces, and port
-allocation.
+Chat view, in-app browser, design mode, and port allocation. Running agents
+off the laptop is planned in `REMOTE-PLAN.md`, not as cloud workspaces.
 
 ## Risks
 
@@ -1072,8 +1096,12 @@ allocation.
 - **Typing in a task diff.** It's a magit diff: keys like stage and discard
   act on the worktree immediately. godel only adds `C`, `gn`, `gp`.
 - **`--fork-session` and `gh`.** Ship relies on Claude's `--fork-session`
-  and on `gh` being installed and logged in. `gh pr create` hasn't been run
-  against GitHub by godel's tests yet.
+  and on `gh` being installed and logged in (`gh pr ready --undo` needs a
+  recent `gh` and a plan that supports drafts). The automated tests use a
+  fake `gh`.
+- **The ship note starts a turn.** Telling the author what was shipped is
+  a prompt, so the author replies (one word) and the task briefly shows as
+  working.
 - **The `initialize` request.** Not a documented CLI command, but the Agent
   SDKs depend on it. If it fails, godel uses the cached list.
 - **Wrapper behaviour.** godel relies on the wrapper passing `--effort`,
