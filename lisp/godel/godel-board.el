@@ -29,6 +29,7 @@
 (declare-function godel-review-diff "godel-review" (task))
 (declare-function godel-review-menu "godel-review" (&optional task))
 (declare-function godel-ship "godel-ship" (task &optional draft))
+(declare-function godel-reviewer-asking-since "godel-reviewer" (task))
 (declare-function godel-ship-browse-pr "godel-ship" (task))
 (declare-function godel-ship-pr-number "godel-ship" (task))
 (declare-function godel-ship-drafting "godel-ship" (task))
@@ -121,10 +122,13 @@ board) removes plain `face' properties when it fontifies."
             (t (format "%dd" (/ s 86400)))))))
 
 (defun godel-board--model-label (task)
+  "TASK's model and effort, e.g. \"Sonnet/high\" or \"Not Diamond/medium\".
+The effort is the one the session is launched with: the task's, else
+`godel-default-effort'.  Not Diamond gets it too (see PLAN.md)."
   (let ((m (godel-models-find (plist-get task :model))))
-    (if (or (null m) (godel-models-router-p m))
-        (or (plist-get m :name) (plist-get task :model) "?")
-      (format "%s/%s" (plist-get m :name) (or (plist-get task :effort) "?")))))
+    (if (null m)
+        (or (plist-get task :model) "?")
+      (format "%s/%s" (plist-get m :name) (or (plist-get task :effort) godel-default-effort)))))
 
 (defun godel-board--repo-name (task)
   (file-name-nondirectory (directory-file-name (plist-get task :repo))))
@@ -275,13 +279,15 @@ once merged, red if closed without merging."
 (defun godel-board--review-badge (task)
   "(ICON TEXT FACE) for TASK's independent review, or nil if nothing to show.
 A ship draft in progress (`godel-ship-drafting') shows instead.
-Running: the elapsed time and what the reviewer is doing.  Findings
-waiting to be accepted or dropped: their count.  A finished review with no
-findings, or a failed one: until the review list has been opened."
+Running: the elapsed time and what the reviewer is doing.  A walkthrough
+waiting for its author's briefing shows the same, as \"asking the author\".
+Findings waiting to be accepted or dropped: their count.  A finished review
+with no findings, or a failed one: until the review list has been opened."
   (let ((status (plist-get task :review-status))
         (proposed (cl-count 'proposed (plist-get task :findings)
                             :key (lambda (f) (plist-get f :state))))
-        (drafting (and (fboundp 'godel-ship-drafting) (godel-ship-drafting task))))
+        (drafting (and (fboundp 'godel-ship-drafting) (godel-ship-drafting task)))
+        (asking (and (fboundp 'godel-reviewer-asking-since) (godel-reviewer-asking-since task))))
     (cond
      (drafting
       (list "⟳" (concat "drafting the ship message " (godel-board--age drafting))
@@ -290,6 +296,9 @@ findings, or a failed one: until the review list has been opened."
       (list "⟳" (concat "reviewing "
                         (godel-board--age (plist-get task :review-started))
                         (if-let* ((a (plist-get task :review-activity))) (concat " · " a) ""))
+            (godel-board--state-face 'setting-up)))
+     (asking
+      (list "⟳" (concat "reviewing " (godel-board--age asking) " · asking the author")
             (godel-board--state-face 'setting-up)))
      ((> proposed 0)
       (list "◎" (format "%d finding%s" proposed (if (= proposed 1) "" "s"))
@@ -304,14 +313,15 @@ findings, or a failed one: until the review list has been opened."
         (face (godel-board--state-face (plist-get task :state))))
     (magit-insert-section (godel-task id (not (member id godel-board--expanded)))
       (magit-insert-heading
-        (format "      %s %-32s %-6s %-14s %-50s %s%s"
+        ;; The model column fits "Not Diamond/medium".
+        (format "      %s %-32s %-6s %-18s %-50s %s%s"
                 (godel-board--icon task)
                 (godel-board--paint (truncate-string-to-width (plist-get task :title) 32 nil nil "…")
                             'magit-section-secondary-heading)
                 (if-let* ((n (and (fboundp 'godel-ship-pr-number) (godel-ship-pr-number task))))
                     (godel-board--paint (concat "#" n) (godel-board--pr-face task))
                   "")
-                (truncate-string-to-width (godel-board--model-label task) 14 nil nil "…")
+                (truncate-string-to-width (godel-board--model-label task) 18 nil nil "…")
                 (godel-board--paint (truncate-string-to-width (or (plist-get task :last-event) "") 50 nil nil "…")
                             face)
                 (if-let* ((badge (godel-board--review-badge task)))
@@ -632,9 +642,8 @@ Asks for the model and effort, defaulting to the current ones."
          (godel-default-model (plist-get task :model))
          (model (godel-new--read-model "Model: " nil nil))
          (entry (godel-models-find model))
-         (effort (unless (godel-models-router-p entry)
-                   (completing-read "Effort: " (plist-get entry :efforts) nil t nil nil
-                                    (or (plist-get task :effort) godel-default-effort))))
+         (effort (completing-read "Effort: " (godel-models-efforts entry) nil t nil nil
+                                  (or (plist-get task :effort) godel-default-effort)))
          ;; Resume if the session ever started (it has a transcript);
          ;; reusing the ID for a fresh start would be rejected.
          (resume (plist-get task :transcript)))

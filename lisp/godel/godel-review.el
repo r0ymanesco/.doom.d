@@ -663,6 +663,15 @@ C edit, x delete, s send)."
         (insert (propertize (format "  Independent review: %s\n\n" note)
                             'font-lock-face (if (eq (plist-get task :review-status) 'failed)
                                                 'error 'shadow))))
+      ;; What the author told the reviewer, hidden until TAB.
+      (when-let* ((briefing (plist-get task :review-briefing)))
+        (magit-insert-section (godel-briefing 'briefing t)
+          (magit-insert-heading
+            (propertize "  The author's briefing to the reviewer    TAB shows it"
+                        'font-lock-face 'shadow))
+          (dolist (line (split-string briefing "\n"))
+            (insert "    " line "\n"))
+          (insert "\n")))
       (when-let* ((proposed (cl-remove-if-not (lambda (f) (eq (plist-get f :state) 'proposed))
                                               (plist-get task :findings))))
         (magit-insert-section (godel-finding-group 'proposed)

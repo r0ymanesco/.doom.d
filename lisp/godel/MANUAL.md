@@ -98,11 +98,12 @@ shows it:
 You get a desktop notification when a task needs attention, needs review,
 or has a model mismatch.
 
-**Models.** Each task runs on one model, chosen when you create it: **Not
-Diamond** (the default; the router picks a model and effort for every
-turn) or a fixed model and effort (Opus, Fable, Sonnet, Haiku…). godel
-applies the choice when it starts the session and checks that the session
-really runs on it.
+**Models.** Each task runs on one model and effort, chosen when you create
+it: **Not Diamond** (the default; the router picks a model for every turn)
+or a fixed model (Opus, Fable, Sonnet, Haiku…). Effort defaults to medium.
+Not Diamond is given the effort too, but for now the router still picks the
+effort for every turn itself. godel applies the choice when it starts the
+session and checks that the session really runs on the chosen model.
 
 ## A typical task
 
@@ -135,17 +136,19 @@ godel · 5 tasks in 2 repos      n new · RET open · … · gr refresh
 
 ▾ doom  ~/.config/doom                                                         ●1 ◐1 ✓1
     Needs attention (1)
-      ● Fix ivy multi-select           Opus/high      permission: Bash(npm test)              3m
+      ● Fix ivy multi-select           Opus/high          permission: Bash(npm test)              3m
     Working (1)
-      ◐ Add tab badges                 Not Diamond    Edit(config.el)   ⟳ reviewing 18s · Grep 1m
+      ◐ Add tab badges                 Not Diamond/medium Edit(config.el)   ⟳ reviewing 18s · Grep 1m
     Needs review (1)
-      ✓ Hello file               #12   Haiku/low      PR opened: https://github.com/…         5m
+      ✓ Hello file               #12   Haiku/low          PR opened: https://github.com/…         5m
 ```
 
 A row shows: the state icon, the title, the PR number (if the task has one),
-the model, the last thing that happened (the tool the agent is using, the
-reason it needs you, its last message…), a badge, and how long ago the task
-last changed.
+the model and effort (for Not Diamond too, e.g. `Not Diamond/medium`), the
+last thing that happened (the tool the agent is using, the reason it needs
+you, its last message…), a badge, and how long ago the task last changed.
+In the sidebar, the model and effort are on the `model:` line of a task's
+`TAB` details.
 
 **Badges:**
 
@@ -215,7 +218,7 @@ repo, godel asks which repo.
 |---|---|
 | `-b` | Base branch (completion over the repo's branches) |
 | `-m` | Model, with descriptions (the same list as Claude's `/model`) |
-| `-e` | Effort (the levels the model supports; not used with Not Diamond, which picks effort itself) |
+| `-e` | Effort (the levels the model supports; default medium). Not Diamond gets it too, though for now the router picks effort itself |
 | `-p` | Permission mode (default: Claude's own) |
 | `c` | Compose the prompt in a buffer |
 | `RET` | Quick prompt in the minibuffer |
@@ -324,8 +327,9 @@ that code.
 
 ### The review list
 
-`v l`: the independent review's status and findings, then your comments
-grouped Pending / Sent / Addressed / Outdated.
+`v l`: the independent review's status, the author's briefing to the reviewer
+(collapsed; `TAB` shows it) and the findings, then your comments grouped
+Pending / Sent / Addressed / Outdated.
 
 | Key | Action |
 |---|---|
@@ -345,6 +349,39 @@ reviewing 18s · Grep(…)`), and you get a notification when it's done.
 Findings (file, lines, severity, comment) appear in the review list as
 proposals; `a` turns one into a pending comment, `x` drops it.
 
+**The reviewer is briefed by the author.** On its own, a reviewer only sees
+the task's prompt and the diff, so it knows nothing of what you and the
+author talked through. So it first asks the author, which still has that
+conversation, for a short briefing: the **problem**, the **solution** and
+the decisions behind it (including what you decided), and **what was
+tested**. While it waits, the board says `⟳ reviewing 12s · asking the
+author`; this takes about 20 seconds, more for a long conversation. The
+author answers from a read-only copy of its session, so the session you're
+working in isn't touched. The reviewer treats the briefing as the author's
+account to check against the code, not as fact: it's told to point out
+where the change doesn't do what the briefing says, or where the testing
+leaves a gap.
+
+- The finished review says whether it had the briefing: `2 findings
+  (briefed by the author)`.
+- To see what the reviewer was told, open the review list (`v l`) and `TAB`
+  on "The author's briefing to the reviewer". (That's for `v r`; a
+  walkthrough's briefing is in its first message.)
+- A task whose session never started has no one to ask, so it's reviewed from
+  the prompt and diff alone. If the author doesn't answer (an error, or
+  nothing within five minutes), the review goes ahead without the briefing
+  and the note says why, in one line: `2 findings (the author couldn't brief
+  it: …)`.
+- The diff the reviewer gets is taken again when the briefing arrives, so it
+  matches the files it reads even if the author kept working meanwhile. The
+  briefing itself is as of the moment you asked.
+- If Emacs restarts while a review is running, it's marked failed
+  ("interrupted by a restart") and you can start it again.
+- The author's answer is only as good as its memory: check anything in it
+  that matters. It's written as the author's own account: the author calls
+  itself "I" and you "the user", so a reviewer reads it as yours.
+- `godel-reviewer-ask-author` set to `nil` turns this off.
+
 ### Walkthrough
 
 `v w` (or `v W` to pick the model) opens a second Claude session in the
@@ -360,6 +397,22 @@ hunk at a time:
   you ask ("note that") or agree. They're marked `[walkthrough]` and land
   as pending comments, so you still decide what's sent to the author.
 - It can't edit files or run commands.
+
+It gets the author's briefing too (see Independent review). While the
+author writes it, the board shows `⟳ reviewing 12s · asking the author`, as
+it does for a review, and the session doesn't open yet. When the briefing is
+back, the session opens and its first message is sent.
+
+Because that can take up to a minute, the session opens **without taking the
+focus**, so what you're typing isn't redirected into it, and a notification
+tells you when it's ready. If you've gone to another workspace, or are in a
+prompt (`M-x`), by then, godel opens nothing under you: it keeps the briefing
+and the notification says "ready to start" (a briefing that failed is kept as
+a failure, so it isn't asked for again). Press `v w` in the workspace you
+started in and the session opens at once (the briefing is kept for ten
+minutes: `godel-reviewer-prepared-max-age`). `v w` again while it's starting
+is refused; once it's open, `v w` shows the session instead of starting
+another.
 
 If opening a file asks you something (a Python environment, lsp's
 "import project?"), answer it; the walkthrough isn't held up.
@@ -450,10 +503,13 @@ repo (not from the board).
 | Option | Default | What it does |
 |---|---|---|
 | `godel-default-model` | `"notdiamond[1m]"` | Model for new tasks (a `value` from the model list) |
-| `godel-default-effort` | `"high"` | Effort for new tasks on a fixed model |
+| `godel-default-effort` | `"medium"` | Effort for new tasks and reviewers, on any model (Not Diamond included) |
 | `godel-default-permission-mode` | `nil` | Permission mode for new tasks; `nil` is Claude's own default |
 | `godel-reviewer-model` | `"notdiamond[1m]"` | Model for `v r` and `v w` |
 | `godel-reviewer-max-diff` | `200000` | Largest diff (characters) put in a reviewer's prompt |
+| `godel-reviewer-ask-author` | `t` | Whether a reviewer first asks the author for a briefing (one extra turn of the author's model; `nil` to skip) |
+| `godel-reviewer-briefing-timeout` | `300` | Seconds to wait for the author's briefing before reviewing without it |
+| `godel-reviewer-prepared-max-age` | `600` | Seconds a walkthrough's briefing is kept when you'd moved on before it arrived |
 | `godel-notify-states` | needs-attention, needs-review, model-mismatch | States that trigger a desktop notification |
 | `godel-board-workspace` | `"Godel"` | Name of the board's workspace |
 | `godel-sidebar-width` | `40` | Sidebar width in columns |

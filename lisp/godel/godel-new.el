@@ -49,12 +49,8 @@
                              godel-default-model))
       (godel-models-find godel-default-model)))
 
-(defun godel-new--router-selected-p ()
-  (godel-models-router-p (godel-new--current-model)))
-
 (defun godel-new--read-effort (prompt _initial _history)
-  (completing-read prompt (or (plist-get (godel-new--current-model) :efforts)
-                              '("low" "medium" "high" "xhigh" "max"))
+  (completing-read prompt (godel-models-efforts (godel-new--current-model))
                    nil t nil nil godel-default-effort))
 
 (defun godel-new--branches (repo)
@@ -71,9 +67,6 @@
 
 (transient-define-prefix godel-new-task-menu ()
   "Create a godel task."
-  ;; Re-check :inapt-if after each change, so effort is enabled as soon as a
-  ;; pinned model is picked (and greyed out again for Not Diamond).
-  :refresh-suffixes t
   :value (lambda ()
            (list (concat "--base=" (godel-new--default-base godel-new--repo))
                  (concat "--model=" godel-default-model)
@@ -82,9 +75,8 @@
    (lambda () (format "New task in %s" (abbreviate-file-name godel-new--repo)))
    ("-b" "base branch" "--base=" :reader godel-new--read-base :always-read t)
    ("-m" "model" "--model=" :reader godel-new--read-model :always-read t)
-   ("-e" "effort" "--effort=" :reader godel-new--read-effort :always-read t
-    :inapt-if godel-new--router-selected-p
-    :inapt-face transient-inapt-suffix)
+   ;; Also for Not Diamond, which gets it as --effort (see PLAN.md).
+   ("-e" "effort" "--effort=" :reader godel-new--read-effort :always-read t)
    ("-p" "permission mode" "--permission-mode="
     :choices ("default" "acceptEdits" "plan" "auto"))]
   ["Prompt"

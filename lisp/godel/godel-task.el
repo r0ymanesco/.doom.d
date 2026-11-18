@@ -118,6 +118,17 @@ worktrees of a repo map to the same root."
       (godel-task--write-file (godel-task-repos-file)
                               (append repos (list repo))))))
 
+(defun godel-task--interrupted-review (task)
+  "TASK as it is after a restart.
+A review marked as running was running in the Emacs that's gone, so it
+won't ever finish: it has failed, and `v r' must not refuse for good."
+  (if (eq (plist-get task :review-status) 'running)
+      (let ((task (copy-sequence task)))
+        (setq task (plist-put task :review-status 'failed))
+        (setq task (plist-put task :review-note "interrupted by a restart"))
+        (plist-put task :review-activity nil))
+    task))
+
 (defun godel-task-load-repo (repo)
   "Read REPO's task store into memory (once)."
   (setq repo (file-name-as-directory (expand-file-name repo)))
@@ -125,7 +136,8 @@ worktrees of a repo map to the same root."
     (push repo godel-task--loaded-repos)
     (when (file-directory-p repo)
       (dolist (task (godel-task--read-file (godel-task--store-file repo)))
-        (puthash (plist-get task :id) task godel-task--tasks)))))
+        (puthash (plist-get task :id) (godel-task--interrupted-review task)
+                 godel-task--tasks)))))
 
 (defun godel-task-load-all ()
   "Load the stores of every repo godel knows about."
@@ -216,7 +228,7 @@ PROPS must include :title and :repo.  :id, :slug, :branch, :worktree,
 
 (defconst godel-task--quiet-props
   '(:review-status :review-started :review-activity :review-note :review-seen
-    :findings :finding-seq :pr-state :pr-draft :ship-note)
+    :review-briefing :findings :finding-seq :pr-state :pr-draft :ship-note)
   "Properties whose changes don't count as the task being updated.
 The board's age column is the time since the agent or you last did
 something; an independent review's progress shouldn't reset it.")
