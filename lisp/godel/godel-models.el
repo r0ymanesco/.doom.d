@@ -7,7 +7,8 @@
 ;;   change version.
 ;; - `godel-models-launch-env' is the one place that decides the environment
 ;;   and extra flags for a launch.  Not Diamond (the router) launches never
-;;   carry the pin variables; every other model is pinned.
+;;   carry the pin variables; every other model is pinned.  Both get the
+;;   effort as --effort.
 ;; - `godel-models-ensure-proxy' makes sure the notdiamond proxy is running
 ;;   and was not started by a pinned launch (which would turn routing off for
 ;;   every session).
@@ -69,10 +70,19 @@ Each entry is a plist with :value, :name, :description, :efforts and
   :group 'godel
   :type 'string)
 
-(defcustom godel-default-effort "high"
-  "Effort for new tasks on a pinned model (the router picks its own)."
+(defcustom godel-default-effort "medium"
+  "Effort for new tasks and reviewers, on any model.
+Not Diamond gets it as --effort only, never as a pin variable; for now the
+router still picks the effort for each turn itself."
   :group 'godel
   :type 'string)
+
+(defconst godel-effort-levels '("low" "medium" "high" "xhigh" "max")
+  "Effort levels offered when a model entry doesn't say which it supports.")
+
+(defun godel-models-efforts (entry)
+  "The effort levels model ENTRY supports, or all of them if it doesn't say."
+  (or (plist-get entry :efforts) godel-effort-levels))
 
 (defconst godel-pin-variables
   '("NOTDIAMOND_RESEARCH_MODEL_PIN" "NOTDIAMOND_RESEARCH_EFFORT_PIN" "NOTDIAMOND_ROUTING")
@@ -225,10 +235,12 @@ ENV defaults to `process-environment'.  Returns a plist:
   :args      extra CLI arguments
   :expect    model `SessionStart' must report
   :pinned    non-nil for a pinned launch
-Not Diamond (the router) never gets the pin variables and no --effort."
+Not Diamond (the router) never gets the pin variables, only --effort (none
+if EFFORT is nil)."
   (let ((clean (godel-models--clean-env env)))
     (if (godel-models-router-p entry)
-        (list :env clean :args nil :expect (plist-get entry :resolved) :pinned nil)
+        (list :env clean :args (and effort (list "--effort" effort))
+              :expect (plist-get entry :resolved) :pinned nil)
       (list :env (append (list (concat "NOTDIAMOND_RESEARCH_MODEL_PIN=" (plist-get entry :value))
                                (concat "NOTDIAMOND_RESEARCH_EFFORT_PIN=" effort)
                                "NOTDIAMOND_ROUTING=off")

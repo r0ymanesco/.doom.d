@@ -135,7 +135,7 @@
       (should-not (godel-test-env-value (plist-get launch :env) var))
       (should-not (cl-some (lambda (e) (string-prefix-p (concat var "=") e))
                            (plist-get launch :env))))
-    (should (null (plist-get launch :args)))
+    (should (equal (plist-get launch :args) '("--effort" "high")))
     (should (null (plist-get launch :pinned)))
     (should (equal (plist-get launch :expect) "notdiamond[1m]"))
     (should (equal (godel-test-env-value (plist-get launch :env) "PATH") "/usr/bin:/bin"))))
@@ -149,6 +149,21 @@
     (should (equal (plist-get launch :args) '("--effort" "high")))
     (should (plist-get launch :pinned))
     (should (equal (plist-get launch :expect) "claude-sonnet-5-5"))))
+
+(ert-deftest godel-test-default-effort-is-medium ()
+  (should (equal (eval (car (get 'godel-default-effort 'standard-value))) "medium")))
+
+(ert-deftest godel-test-launch-env-router-effort ()
+  "Not Diamond gets the effort as --effort only, never as the effort pin."
+  (dolist (effort '("low" "medium" "max"))
+    (let ((launch (godel-models-launch-env godel-test-router effort godel-test-inherited)))
+      (should (equal (plist-get launch :args) (list "--effort" effort)))
+      (should-not (godel-test-env-value (plist-get launch :env) "NOTDIAMOND_RESEARCH_EFFORT_PIN"))
+      (should-not (cl-some (lambda (e) (string-prefix-p "NOTDIAMOND_RESEARCH_EFFORT_PIN=" e))
+                           (plist-get launch :env)))))
+  ;; No effort, no flag.
+  (should (null (plist-get (godel-models-launch-env godel-test-router nil godel-test-inherited)
+                           :args))))
 
 (defun godel-test-child-env (env)
   "Environment lines a real child process sees with ENV."
@@ -565,6 +580,46 @@ The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
               (should (equal (cdr (assoc "alpha" hidden)) nil))))
         (kill-buffer)))))
 
+(defun godel-test-line-with (text)
+  "The line of the current buffer containing TEXT."
+  (goto-char (point-min))
+  (search-forward text)
+  (buffer-substring (line-beginning-position) (line-end-position)))
+
+(ert-deftest godel-test-board-shows-effort ()
+  "Board and sidebar show the effort for every model, Not Diamond included."
+  (godel-test-with-env
+    (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
+           (nd (godel-task-create :title "Routed default" :repo repo :base "main"
+                                  :model "notdiamond[1m]"))
+           (nd-x (godel-task-create :title "Routed xhigh" :repo repo :base "main"
+                                    :model "notdiamond[1m]" :effort "xhigh"))
+           (son (godel-task-create :title "Pinned sonnet" :repo repo :base "main"
+                                   :model "sonnet" :effort "low")))
+      ;; No effort on the task: the default, which its launch would use.
+      (should (equal (godel-board--model-label nd) "Not Diamond/medium"))
+      (should (equal (godel-board--model-label nd-x) "Not Diamond/xhigh"))
+      (should (equal (godel-board--model-label son) "Sonnet/low"))
+      (should (equal (godel-board--model-label '(:model "gone")) "gone"))
+      ;; Full board: in the task's row, not cut short.
+      (with-current-buffer (godel-board-buffer)
+        (unwind-protect
+            (progn
+              (should (string-match-p "Not Diamond/medium " (godel-test-line-with "Routed default")))
+              (should (string-match-p "Not Diamond/xhigh " (godel-test-line-with "Routed xhigh")))
+              (should (string-match-p "Sonnet/low " (godel-test-line-with "Pinned sonnet")))
+              ;; And in the details.
+              (should (godel-test-text-order-p "Routed xhigh" "model" "Not Diamond/xhigh")))
+          (kill-buffer)))
+      ;; Sidebar: in the task's details.
+      (cl-letf (((symbol-function '+workspace-current-name) (lambda () nil)))
+        (with-current-buffer (godel-board-buffer t)
+          (unwind-protect
+              (progn
+                (should (godel-test-text-order-p "Routed default" "model" "Not Diamond/medium"))
+                (should (godel-test-text-order-p "Routed xhigh" "model" "Not Diamond/xhigh")))
+            (kill-buffer)))))))
+
 (ert-deftest godel-test-sidebar-compact-view ()
   (godel-test-with-env
     (let* ((tasks (godel-test-board-tasks tmp))
@@ -790,6 +845,55 @@ instance-name prompt bug): it waits for the first and gets its buffer."
                   ((symbol-function 'godel-agent-start) (lambda (&rest _) (error "Must not start"))))
           (should-error (godel-board-restart) :type 'user-error)))
       (remhash (plist-get task :id) godel-agent--starting))))
+
+(ert-deftest godel-test-restart-asks-effort-for-router ()
+  "R asks for effort on Not Diamond too: the task's, else the default."
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'idle))
+           (id (plist-get task :id))
+           offered)
+      (cl-letf (((symbol-function 'godel-board--task) (lambda () (godel-task-get id)))
+                ((symbol-function 'godel-new--read-model) (lambda (&rest _) "notdiamond[1m]"))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt _coll &rest args) (push (nth 4 args) offered) "low"))
+                ((symbol-function 'godel-agent-live-p) #'ignore)
+                ((symbol-function 'godel-agent-stop) #'ignore)
+                ((symbol-function 'run-with-timer) #'ignore))
+        (godel-board-restart)
+        (should (equal (plist-get (godel-task-get id) :model) "notdiamond[1m]"))
+        (should (equal (plist-get (godel-task-get id) :effort) "low"))
+        (godel-board-restart))
+      ;; First the default (the task had no effort), then the task's own.
+      (should (equal (reverse offered) '("medium" "low"))))))
+
+(ert-deftest godel-test-launch-router-passes-effort ()
+  "A Not Diamond session starts with --effort and no pin variables."
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'idle))
+           (id (plist-get task :id))
+           (process-environment (append godel-test-inherited process-environment))
+           flags env)
+      (require 'claude-code-ide)
+      (cl-letf (((symbol-function 'godel-agent--server-socket) (lambda () "/tmp/godel-test.sock"))
+                ((symbol-function 'godel-agent--watch-trust) #'ignore)
+                ((symbol-function 'claude-code-ide)
+                 (lambda ()
+                   (setq flags (split-string-shell-command claude-code-ide-cli-extra-flags)
+                         env process-environment))))
+        ;; No effort on the task: the default.
+        (godel-agent--launch (godel-task-get id) nil)
+        (should (equal (cadr (member "--effort" flags)) "medium"))
+        (dolist (var godel-pin-variables)
+          (should-not (godel-test-env-value env var)))
+        (should (equal (plist-get (godel-task-get id) :expect-model) "notdiamond[1m]"))
+        (should-not (plist-get (godel-task-get id) :pinned))
+        ;; The task's own effort.
+        (godel-task-update id :effort "max")
+        (godel-agent--launch (godel-task-get id) t)
+        (should (equal (cadr (member "--effort" flags)) "max"))
+        (should (member "--resume" flags))
+        (dolist (var godel-pin-variables)
+          (should-not (godel-test-env-value env var)))))))
 
 (ert-deftest godel-test-no-launch-when-session-live ()
   "Even if a start gets through, it never launches over a live session."
@@ -1104,7 +1208,7 @@ instance-name prompt bug): it waits for the first and gets its buffer."
                    (funcall on-exit 0 godel-test-reviewer-output))))
         (godel-reviewer-run (godel-task-get id)))
       ;; Streamed, read-only, headless, no session saved, no pins for Not
-      ;; Diamond, no godel hooks.
+      ;; Diamond (only --effort), no godel hooks.
       (should (member "stream-json" (plist-get ran :args)))
       (should (member "--no-session-persistence" (plist-get ran :args)))
       (should (equal activity-seen "Read(app.py)"))
@@ -1113,7 +1217,7 @@ instance-name prompt bug): it waits for the first and gets its buffer."
       (should (equal notified '(("godel: review of rev is done" "2 findings (v l on the board to see them)"))))
       (should (member "Edit,Write,MultiEdit,NotebookEdit,Bash" (plist-get ran :args)))
       (should-not (member "--settings" (plist-get ran :args)))
-      (should-not (member "--effort" (plist-get ran :args)))
+      (should (equal (cadr (member "--effort" (plist-get ran :args))) godel-default-effort))
       ;; Pin variables and GODEL_SERVER only appear as bare names (= unset).
       (should-not (cl-some (lambda (e) (string-match-p "\\`\\(NOTDIAMOND_\\|GODEL_SERVER=\\)[^=]*=" e))
                            (plist-get ran :env)))
@@ -1144,6 +1248,1026 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (godel-reviewer-run (godel-task-get id)))
       (should (eq (plist-get (godel-task-get id) :review-status) 'failed))
       (should (equal (caar notified) "godel: review of rev failed")))))
+
+;;;; The author's briefing for reviewers
+
+(defun godel-test-briefing-output (text &optional error)
+  "What a headless run prints: wrapper lines, then the result."
+  (concat "Reusing running notdiamond proxy (pid 1) at http://127.0.0.1:8082\n"
+          "Launching Claude Code from /x/claude...\n"
+          (json-encode `((type . "result") (subtype . "success")
+                         (is_error . ,(if error t :json-false)) (result . ,text)))
+          "\n"))
+
+(defconst godel-test-briefing
+  "## Problem\nUsers got logged out.\n\n## Solution\nRefresh early; the user chose 5 min over 1 min.\n\n## Tested\nunit tests; not the UI."
+  "A briefing like the author would write.")
+
+(defun godel-test-briefed-task (tmp &rest props)
+  "A review task whose author's session has started, with PROPS."
+  (let* ((task (godel-test-review-task tmp))
+         (id (plist-get task :id)))
+    (apply #'godel-task-update id :transcript (expand-file-name "t.jsonl" tmp)
+           :session-id "author-sid" props)))
+
+(ert-deftest godel-test-parse-briefing ()
+  (should (equal (godel-reviewer-parse-briefing (godel-test-briefing-output "  the briefing\n"))
+                 "the briefing"))
+  (should-error (godel-reviewer-parse-briefing (godel-test-briefing-output "overloaded" t))
+                :type 'error)
+  (should (string-match-p "overloaded"
+                          (cadr (should-error (godel-reviewer-parse-briefing
+                                               (godel-test-briefing-output "overloaded" t))))))
+  (should-error (godel-reviewer-parse-briefing (godel-test-briefing-output "   ")))
+  (should-error (godel-reviewer-parse-briefing "no json here\n")))
+
+(ert-deftest godel-test-reviewer-prompts-carry-briefing ()
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (tricky "Used 100% of the budget; format %s and %d stay literal.\n## Tested\nnothing")
+           (plain (godel-reviewer-prompt task))
+           (briefed (godel-reviewer-prompt task tricky))
+           (walk-plain (godel-reviewer-walkthrough-prompt task))
+           (walk (godel-reviewer-walkthrough-prompt task tricky)))
+      ;; Without a briefing: no section, and the prompt reads as before.
+      (dolist (text (list plain walk-plain))
+        (should-not (string-match-p "briefing" text))
+        (should (string-match-p "^\\+    return 20" text)))
+      (should (string-match-p "^The task they were given:\n.*\n\nTheir changes" plain))
+      ;; With one: the author's words, framed as something to check, ahead of
+      ;; the diff, with the diff still there.
+      (dolist (text (list briefed walk))
+        (should (string-match-p "<briefing>\nUsed 100% of the budget; format %s and %d stay literal\\."
+                                text))
+        (should (string-match-p "don't take it on trust" text))
+        (should (< (string-match "<briefing>" text) (string-match "```diff" text)))
+        (should (string-match-p "^\\+    return 20" text)))
+      ;; Blank counts as none.
+      (should-not (string-match-p "briefing" (godel-reviewer-prompt task "  \n"))))))
+
+(ert-deftest godel-test-briefing-forks-the-authors-session ()
+  "The author is asked in a read-only fork of its session, as itself."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp :model "sonnet" :effort "low"))
+           (id (plist-get task :id))
+           (process-environment (append godel-test-inherited process-environment))
+           ran result)
+      (cl-letf (((symbol-function 'godel-models--run)
+                 (lambda (program args callback &optional input env)
+                   (setq ran (list :program program :args args :input input :env env
+                                   :dir default-directory))
+                   (funcall callback 0 (godel-test-briefing-output godel-test-briefing))
+                   'proc)))
+        (godel-reviewer-briefing (godel-task-get id) (lambda (&rest r) (setq result r))))
+      (let ((args (plist-get ran :args)))
+        (should (equal (cadr (member "--resume" args)) "author-sid"))
+        (should (member "--fork-session" args))
+        (should (member "-p" args))
+        (should (member "--no-session-persistence" args))
+        (should (member "Edit,Write,MultiEdit,NotebookEdit,Bash" args))
+        ;; The author's own model and effort: pinned Sonnet at low.
+        (should (equal (cadr (member "--effort" args)) "low"))
+        (should-not (member "--settings" args)))
+      (should (equal (plist-get ran :dir) (plist-get task :worktree)))
+      (should (string-match-p "## Problem" (plist-get ran :input)))
+      (should (string-match-p "## Tested" (plist-get ran :input)))
+      ;; Never reports as the task.
+      (should (equal (car (plist-get ran :env)) "GODEL_SERVER"))
+      (should (equal (godel-test-env-value (plist-get ran :env) "NOTDIAMOND_RESEARCH_MODEL_PIN")
+                     "sonnet"))
+      (should (equal result (list godel-test-briefing nil)))
+      (should-not (gethash id godel-reviewer--briefing-runs)))))
+
+(ert-deftest godel-test-briefing-skipped-or-failed ()
+  (godel-test-with-env
+    (let* ((fresh (godel-test-review-task tmp))   ; its session never started
+           (briefed (godel-test-briefed-task tmp))
+           (id (plist-get briefed :id))
+           result)
+      (cl-letf (((symbol-function 'godel-models--run)
+                 (lambda (&rest _) (error "Must not ask"))))
+        ;; Nobody to ask: no transcript, or the option is off.
+        (godel-reviewer-briefing (godel-task-get (plist-get fresh :id))
+                                 (lambda (&rest r) (setq result r)))
+        (should (equal result '(nil nil)))
+        (setq result 'unset)
+        (let ((godel-reviewer-ask-author nil))
+          (godel-reviewer-briefing (godel-task-get id) (lambda (&rest r) (setq result r))))
+        (should (equal result '(nil nil))))
+      ;; The author fails: the reason comes back, nothing is raised.
+      (cl-letf (((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _)
+                   (funcall callback 1 (godel-test-briefing-output "overloaded" t)))))
+        (godel-reviewer-briefing (godel-task-get id) (lambda (&rest r) (setq result r))))
+      (should (null (car result)))
+      (should (string-match-p "overloaded" (cadr result)))
+      (should-not (gethash id godel-reviewer--briefing-runs))
+      ;; Claude can't even be started.
+      (cl-letf (((symbol-function 'godel-models--run)
+                 (lambda (&rest _) (signal 'file-missing '("Searching for program" "no such file")))))
+        (godel-reviewer-briefing (godel-task-get id) (lambda (&rest r) (setq result r))))
+      (should (null (car result)))
+      (should (cadr result))
+      (should-not (gethash id godel-reviewer--briefing-runs)))))
+
+(ert-deftest godel-test-briefing-shared-by-concurrent-askers ()
+  "A review and a walkthrough started together ask the author once and share the answer."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           (asked 0) pending walkthrough-got)
+      (cl-letf (((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _) (cl-incf asked) (setq pending callback) 'proc))
+                ((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a _i _e _m on-exit) (funcall on-exit 0 godel-test-reviewer-output))))
+        ;; First asker (the walkthrough's), then a review while it's pending.
+        (godel-reviewer-briefing (godel-task-get id) (lambda (&rest r) (setq walkthrough-got r)))
+        (should (gethash id godel-reviewer--briefing-runs))
+        (godel-reviewer-run (godel-task-get id))
+        (should (= asked 1))
+        (should (eq (plist-get (godel-task-get id) :review-status) 'running))
+        ;; The answer arrives once, for both.
+        (funcall pending 0 (godel-test-briefing-output godel-test-briefing))
+        (should-not (gethash id godel-reviewer--briefing-runs))
+        (should (equal walkthrough-got (list godel-test-briefing nil)))
+        (should (eq (plist-get (godel-task-get id) :review-status) 'done))
+        (should (equal (plist-get (godel-task-get id) :review-note) "2 findings (briefed by the author)"))
+        ;; Free again: the next ask is a new one.
+        (godel-reviewer-briefing (godel-task-get id) #'ignore)
+        (should (= asked 2))))))
+
+(ert-deftest godel-test-briefing-one-waiter-failing-doesnt-silence-the-rest ()
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           pending heard)
+      (cl-letf (((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _) (setq pending callback) 'proc))
+                ((symbol-function 'message) #'ignore))
+        (godel-reviewer-briefing (godel-task-get id) (lambda (&rest _) (error "first waiter breaks")))
+        (godel-reviewer-briefing (godel-task-get id) (lambda (&rest r) (setq heard r)))
+        (funcall pending 0 (godel-test-briefing-output godel-test-briefing)))
+      (should (equal heard (list godel-test-briefing nil)))
+      (should-not (gethash id godel-reviewer--briefing-runs)))))
+
+(defun godel-test-pid-running-p (pid)
+  "Non-nil if process PID exists and isn't a zombie."
+  (let ((state (alist-get 'state (ignore-errors (process-attributes pid)))))
+    (and state (not (equal state "Z")))))
+
+(ert-deftest godel-test-briefing-times-out ()
+  "A hung author is killed after the timeout, with everything it started.
+The real one is the notdiamond wrapper, a parent of the real `claude'.  Killing
+only the wrapper orphans `claude', which keeps running and spending tokens
+(checked against the real wrapper), so this uses a parent with a child."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           (godel-reviewer-briefing-timeout 1.0)
+           proc child result)
+      (cl-letf (((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _)
+                   ;; A parent that starts a child, tells us its pid, and never answers.
+                   (setq proc (make-process
+                               :name "godel-test-hung"
+                               :command '("sh" "-c" "sleep 60 & echo $!; wait")
+                               :noquery t :connection-type 'pipe
+                               :filter (lambda (_p out)
+                                         (when (and (not child) (string-match "\\([0-9]+\\)" out))
+                                           (setq child (string-to-number (match-string 1 out)))))
+                               :sentinel (lambda (p _)
+                                           (unless (process-live-p p)
+                                             (funcall callback (process-exit-status p) ""))))))))
+        (godel-reviewer-briefing (godel-task-get id) (lambda (&rest r) (setq result r)))
+        (should (godel-test-wait (lambda () child) 5))
+        (should (process-live-p proc))
+        (should (godel-test-pid-running-p child))
+        (should (godel-test-wait (lambda () result) 8)))
+      ;; Both the parent and the child it started are gone.
+      (should-not (process-live-p proc))
+      (should (godel-test-wait (lambda () (not (godel-test-pid-running-p child))) 5))
+      (should (null (car result)))
+      (should (string-match-p "no answer after" (cadr result)))
+      (should-not (gethash id godel-reviewer--briefing-runs)))))
+
+(ert-deftest godel-test-answer-in-time-cancels-the-timeout ()
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           (before (length timer-list)))
+      (cl-letf (((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _)
+                   (run-at-time 0.05 nil callback 0 (godel-test-briefing-output godel-test-briefing))
+                   'proc)))
+        (let (result)
+          (godel-reviewer-briefing (godel-task-get id) (lambda (&rest r) (setq result r)))
+          (should (godel-test-wait (lambda () result) 5))
+          (should (equal result (list godel-test-briefing nil)))))
+      ;; The 300 s timer is gone, not left to fire later.
+      (should (<= (length timer-list) before)))))
+
+(ert-deftest godel-test-review-without-merge-base-fails-at-once ()
+  "No merge base: the user-error comes at the key press, with nothing marked or opened."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (cl-letf (((symbol-function 'godel-review-merge-base) (lambda (&rest _) nil))
+                ((symbol-function 'godel-models-ensure-proxy) (lambda (&rest _) (error "Too far")))
+                ((symbol-function 'godel-reviewer--start-session) (lambda (&rest _) (error "Must not open")))
+                ((symbol-function 'godel-models--run) (lambda (&rest _) (error "Must not ask"))))
+        (should-error (godel-reviewer-run (godel-task-get id)) :type 'user-error)
+        (should-not (plist-get (godel-task-get id) :review-status))
+        (should-error (godel-reviewer-walkthrough (godel-task-get id)) :type 'user-error)
+        (should-not (gethash id godel-reviewer--briefing-runs))))))
+
+(ert-deftest godel-test-review-error-after-briefing-ends-the-review ()
+  "Whatever fails once the author has answered marks the review failed, not running."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _)
+                   (funcall callback 0 (godel-test-briefing-output godel-test-briefing))))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (&rest _) (error "cannot start claude"))))
+        (godel-reviewer-run (godel-task-get id)))
+      (let ((task (godel-task-get id)))
+        (should (eq (plist-get task :review-status) 'failed))
+        (should (string-match-p "cannot start claude" (plist-get task :review-note)))))))
+
+(ert-deftest godel-test-send-prompt-survives-a-closed-session ()
+  (let (pasted)
+    (cl-letf (((symbol-function 'ghostel-paste-string) (lambda (text) (push text pasted)))
+              ((symbol-function 'ghostel-send-key) #'ignore))
+      (let ((dead (generate-new-buffer "dead-session")))
+        (kill-buffer dead)
+        (godel-reviewer--send-prompt dead "hello")
+        (should-not pasted))
+      (let ((live (generate-new-buffer "live-session")))
+        (unwind-protect
+            (progn (godel-reviewer--send-prompt live "hello")
+                   (should (equal pasted '("hello"))))
+          (kill-buffer live))))))
+
+(ert-deftest godel-test-reviewer-run-asks-the-author-first ()
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           order activity-while-asking stream-input finish-asking)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _)
+                   (push 'asked order)
+                   (setq finish-asking
+                         (lambda () (funcall callback 0 (godel-test-briefing-output godel-test-briefing))))
+                   'proc))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a input _e _m on-exit)
+                   (push 'reviewed order)
+                   (setq stream-input input)
+                   (funcall on-exit 0 godel-test-reviewer-output))))
+        (godel-reviewer-run (godel-task-get id))
+        ;; Asking: the board says so, and the review hasn't started.
+        (setq activity-while-asking (plist-get (godel-task-get id) :review-activity))
+        (should (eq (plist-get (godel-task-get id) :review-status) 'running))
+        (should (equal order '(asked)))
+        (funcall finish-asking))
+      (should (equal activity-while-asking "asking the author"))
+      (should (equal (reverse order) '(asked reviewed)))
+      (should (string-match-p "<briefing>\n## Problem\nUsers got logged out" stream-input))
+      (should (string-match-p "^\\+    return 20" stream-input))
+      (let ((task (godel-task-get id)))
+        (should (eq (plist-get task :review-status) 'done))
+        (should (equal (plist-get task :review-note) "2 findings (briefed by the author)"))
+        (should (equal (plist-get task :review-briefing) godel-test-briefing)))
+      ;; Reviewing again with a fresh task state forgets the old briefing.
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-reviewer-briefing)
+                 (lambda (_task callback) (funcall callback nil nil)))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a input _e _m on-exit)
+                   (setq stream-input input)
+                   (funcall on-exit 0 godel-test-reviewer-output))))
+        (godel-reviewer-run (godel-task-get id)))
+      (should-not (string-match-p "briefing" stream-input))
+      (should-not (plist-get (godel-task-get id) :review-briefing))
+      (should (equal (plist-get (godel-task-get id) :review-note) "2 findings")))))
+
+(ert-deftest godel-test-reviewer-run-without-briefing-says-so ()
+  "If the author can't answer, the review still runs, and its note says why."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           stream-input)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _)
+                   (funcall callback 1 (godel-test-briefing-output "overloaded" t))))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a input _e _m on-exit)
+                   (setq stream-input input)
+                   (funcall on-exit 0 godel-test-reviewer-output))))
+        (godel-reviewer-run (godel-task-get id)))
+      (should-not (string-match-p "briefing" stream-input))
+      (should (string-match-p "return 20" stream-input))
+      (let ((task (godel-task-get id)))
+        (should (eq (plist-get task :review-status) 'done))
+        (should (equal (plist-get task :review-note)
+                       "2 findings (the author couldn't brief it: overloaded)"))
+        (should-not (plist-get task :review-briefing))))))
+
+(ert-deftest godel-test-review-setup-failure-ends-the-review ()
+  "A failure setting up the briefing, before any process starts, fails the review
+too, instead of leaving it marked as running and refusing every later `v r'."
+  (godel-test-with-env
+    (let* (;; A malformed stored effort on a pinned author: the briefing's own
+           ;; launch setup signals before it starts anything.
+           (task (godel-test-briefed-task tmp :model "sonnet" :effort 5))
+           (id (plist-get task :id))
+           stream-input)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-models--run)
+                 (lambda (&rest _) (error "Must not start a process")))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a input _e _m on-exit)
+                   (setq stream-input input)
+                   (funcall on-exit 0 godel-test-reviewer-output))))
+        (godel-reviewer-run (godel-task-get id))
+        (let ((task (godel-task-get id)))
+          (should (eq (plist-get task :review-status) 'failed))
+          (should (plist-get task :review-note)))
+        (should-not stream-input)
+        ;; Not stuck: once the stored effort is fixed, a review runs.
+        (godel-task-update id :model "notdiamond[1m]" :effort "low")
+        (cl-letf (((symbol-function 'godel-models--run)
+                   (lambda (_p _a callback &rest _)
+                     (funcall callback 0 (godel-test-briefing-output godel-test-briefing))
+                     'proc)))
+          (godel-reviewer-run (godel-task-get id))))
+      (should (eq (plist-get (godel-task-get id) :review-status) 'done)))))
+
+(ert-deftest godel-test-review-diff-is-as-fresh-as-the-files ()
+  "The author can keep working while it writes the briefing: the reviewer gets
+the diff as it is when the briefing arrives, matching the files it will read."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           answer stream-input)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _) (setq answer callback) 'proc))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a input _e _m on-exit)
+                   (setq stream-input input)
+                   (funcall on-exit 0 godel-test-reviewer-output))))
+        (godel-reviewer-run (godel-task-get id))
+        ;; The author goes on working while it's asked.
+        (with-temp-buffer
+          (insert "\ndef d():\n    return 4\n")
+          (append-to-file (point-min) (point-max)
+                          (expand-file-name "app.py" (plist-get task :worktree))))
+        (funcall answer 0 (godel-test-briefing-output godel-test-briefing)))
+      (should (string-match-p "^\\+    return 4" stream-input))
+      (should (string-match-p "^\\+    return 20" stream-input)))
+    ;; If the diff can't be taken again, the earlier one is used, not a failure.
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           (calls 0) answer stream-input)
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-reviewer-diff-text)
+                 (lambda (_task) (if (= (cl-incf calls) 1) "EARLIER-DIFF\n" (user-error "gone"))))
+                ((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _) (setq answer callback) 'proc))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a input _e _m on-exit)
+                   (setq stream-input input)
+                   (funcall on-exit 0 godel-test-reviewer-output))))
+        (godel-reviewer-run (godel-task-get id))
+        (funcall answer 0 (godel-test-briefing-output godel-test-briefing)))
+      (should (string-match-p "EARLIER-DIFF" stream-input))
+      (should (eq (plist-get (godel-task-get id) :review-status) 'done)))))
+
+(ert-deftest godel-test-reviewer-run-task-gone-while-asking ()
+  "A task torn down while its author answers doesn't start a review."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _)
+                   (godel-task-delete id)
+                   (funcall callback 0 (godel-test-briefing-output godel-test-briefing))))
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (&rest _) (error "Must not review a gone task"))))
+        (godel-reviewer-run (godel-task-get id)))
+      (should-not (godel-task-get id)))))
+
+;; The walkthrough opens its session only after the author's briefing is back.
+
+(defvar godel-test--workspace nil "The workspace `godel-test-with-workspaces' says is current.")
+(defvar godel-test--switches nil "Workspaces switched to, newest first.")
+
+(defmacro godel-test-with-workspaces (current existing &rest body)
+  "Run BODY with Doom's workspace functions faked: CURRENT is the current
+workspace and EXISTING the ones that exist."
+  (declare (indent 2))
+  `(let ((godel-test--workspace ,current) (godel-test--switches nil))
+     (cl-letf (((symbol-function '+workspace-current-name) (lambda () godel-test--workspace))
+               ((symbol-function '+workspace-exists-p) (lambda (name) (member name ,existing)))
+               ((symbol-function '+workspace-switch)
+                (lambda (name &optional _create)
+                  (push name godel-test--switches)
+                  (error "godel must not switch workspaces under you (to %s)" name))))
+       ,@body)))
+
+(defmacro godel-test-with-walkthrough-stubs (&rest body)
+  "Run BODY with the walkthrough's outside world faked.
+Binds `answer' (the author's pending reply), `asks' (how often the author was
+asked), `opened' (the session's callback), `opened-focus', `opens' (how many
+sessions were opened), `sent' (buffer and prompt), `sends', `notified' and
+`messages'."
+  (declare (indent 0))
+  `(let (answer opened opened-focus (opens 0) (asks 0) sent (sends 0) notified messages)
+     (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+               ((symbol-function 'message)
+                (lambda (fmt &rest args) (push (apply #'format fmt args) messages)))
+               ((symbol-function 'godel-notify) (lambda (title body) (push (list title body) notified)))
+               ((symbol-function 'godel-models--run)
+                (lambda (_p _a callback &rest _) (cl-incf asks) (setq answer callback) 'proc))
+               ((symbol-function 'godel-reviewer--start-session)
+                (lambda (_task _launch callback &optional focus)
+                  (cl-incf opens)
+                  (setq opened callback opened-focus (list focus))))
+               ((symbol-function 'godel-reviewer--send-prompt)
+                (lambda (buffer prompt) (cl-incf sends) (setq sent (list buffer prompt)))))
+       ,@body)))
+
+(ert-deftest godel-test-walkthrough-opens-after-briefing ()
+  "While the author writes, the board says so and no session is open yet."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp :review-briefing "the review's own briefing"))
+           (id (plist-get task :id))
+           (store (godel-task--store-file (plist-get task :repo)))
+           (keys (lambda () (cl-loop for (k _) on (godel-task-get id) by #'cddr collect k)))
+           (file-text (lambda () (with-temp-buffer (insert-file-contents store) (buffer-string))))
+           (keys-before (funcall keys))
+           (file-before (funcall file-text))
+           badge-during)
+      (godel-test-with-walkthrough-stubs
+        (godel-reviewer-walkthrough (godel-task-get id))
+        ;; Asking: the automatic reviewer's note, and no session yet.
+        (should-not opened)
+        (should (godel-reviewer-asking-since (godel-task-get id)))
+        ;; The note is in memory only: the task and its file on disk are
+        ;; exactly as they were before `v w'.
+        (should (equal (funcall keys) keys-before))
+        (should (equal (funcall file-text) file-before))
+        (should (godel-reviewer--busy-p (godel-task-get id)))
+        (setq badge-during (cadr (godel-board--review-badge (godel-task-get id))))
+        (should (string-match-p "\\`reviewing [0-9]+s · asking the author\\'" badge-during))
+        (should (cl-some (lambda (m) (string-match-p "asking the author for a briefing" m)) messages))
+        ;; The briefing arrives: the note goes, the session opens, and only
+        ;; then is the first message sent.
+        (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+        (should-not (godel-reviewer-asking-since (godel-task-get id)))
+        (should-not (godel-reviewer--busy-p (godel-task-get id)))
+        (should opened)
+        (should-not sent)
+        ;; It had to wait, so it must not take the focus.
+        (should (equal opened-focus '(nil)))
+        (funcall opened 'the-buffer)
+        (should (eq (car sent) 'the-buffer))
+        (should (string-match-p "<briefing>\n## Problem" (cadr sent)))
+        (should (string-match-p "^\\+    return 20" (cadr sent)))
+        (should-not (string-match-p "asking" (or (cadr (godel-board--review-badge (godel-task-get id)))
+                                                  "")))
+        ;; And a notification says it's ready.
+        (should (equal (caar notified) "godel: walkthrough of rev is ready")))
+      ;; The review's briefing is the review's: the walkthrough leaves it alone.
+      (should (equal (plist-get (godel-task-get id) :review-briefing) "the review's own briefing"))
+      ;; And afterwards it left nothing in the store either.
+      (should (equal (funcall keys) keys-before)))))
+
+(ert-deftest godel-test-walkthrough-diff-is-as-fresh-as-the-files ()
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-walkthrough-stubs
+        (godel-reviewer-walkthrough (godel-task-get id))
+        (with-temp-buffer
+          (insert "\ndef d():\n    return 4\n")
+          (append-to-file (point-min) (point-max)
+                          (expand-file-name "app.py" (plist-get task :worktree))))
+        (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+        (funcall opened 'the-buffer)
+        (should (string-match-p "^\\+    return 4" (cadr sent)))
+        (should (string-match-p "^\\+    return 20" (cadr sent)))))))
+
+(ert-deftest godel-test-walkthrough-session-not-ready ()
+  "If the session never shows its input box, nothing is typed into it."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-walkthrough-stubs
+        (godel-reviewer-walkthrough (godel-task-get id))
+        (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+        (funcall opened :not-ready)
+        (should-not sent)
+        (should (cl-some (lambda (m) (string-match-p "isn't ready" m)) messages))
+        (should-not notified)
+        ;; Nothing is left starting: the next `v w' is allowed.
+        (should-not (gethash id godel-reviewer--walkthrough-starting))))))
+
+(ert-deftest godel-test-walkthrough-session-never-started ()
+  "No session to type into: only the failure to start is reported, not
+\"type your request there\"."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-walkthrough-stubs
+        (godel-reviewer-walkthrough (godel-task-get id))
+        (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+        (funcall opened nil)
+        (should-not sent)
+        (should-not notified)
+        (should-not (cl-some (lambda (m) (string-match-p "type your request" m)) messages))
+        (should-not (gethash id godel-reviewer--walkthrough-starting))))))
+
+(ert-deftest godel-test-start-session-callback-tells-the-cases-apart ()
+  "The buffer when ready, `:not-ready' when it never showed its input box, nil
+(with a message) when it never started or closed first."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (launch (godel-models-launch-env (godel-models-find "notdiamond[1m]") "medium"))
+           (name (godel-agent-buffer-name (plist-get task :worktree)
+                                          godel-reviewer-walkthrough-instance))
+           (screen nil) (create t) (close-first nil) got messages)
+      (require 'claude-code-ide)
+      (unwind-protect
+          (cl-letf (((symbol-function 'message)
+                     (lambda (fmt &rest args) (push (apply #'format fmt args) messages)))
+                    ((symbol-function 'claude-code-ide)
+                     (lambda () (when create (generate-new-buffer name))))
+                    ((symbol-function 'godel-tui-wait)
+                     (lambda (buffer _pred _timeout callback)
+                       (when close-first (kill-buffer buffer))
+                       (funcall callback screen))))
+            (let ((run (lambda ()
+                         (when-let* ((b (get-buffer name))) (kill-buffer b))
+                         (setq got 'unset messages nil)
+                         (godel-reviewer--start-session task launch (lambda (b) (setq got b))))))
+              ;; Never started.
+              (setq create nil)
+              (funcall run)
+              (should (null got))
+              (should (cl-some (lambda (m) (string-match-p "didn't start" m)) messages))
+              ;; Ready.
+              (setq create t screen "❯ ")
+              (funcall run)
+              (should (eq got (get-buffer name)))
+              ;; Started, but the input box never showed.
+              (setq screen nil)
+              (funcall run)
+              (should (eq got :not-ready))
+              ;; Closed before it was ready.
+              (setq close-first t)
+              (funcall run)
+              (should (null got))
+              (should (cl-some (lambda (m) (string-match-p "closed before it was ready" m)) messages))))
+        (when-let* ((b (get-buffer name))) (kill-buffer b))))))
+
+(ert-deftest godel-test-walkthrough-without-briefing-still-starts ()
+  "A failed briefing doesn't keep the walkthrough closed: it opens, without the briefing."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-walkthrough-stubs
+        (godel-reviewer-walkthrough (godel-task-get id))
+        (funcall answer 1 (godel-test-briefing-output "overloaded" t))
+        (should opened)
+        (should-not (godel-reviewer-asking-since (godel-task-get id)))
+        (funcall opened 'the-buffer)
+        (should (string-match-p "return 20" (cadr sent)))
+        (should-not (string-match-p "briefing" (cadr sent)))
+        (should (cl-some (lambda (m) (string-match-p "couldn't brief the walkthrough (overloaded)" m))
+                         messages)))
+      (should-not (plist-get (godel-task-get id) :review-briefing)))))
+
+(ert-deftest godel-test-walkthrough-fresh-task-opens-at-once ()
+  "A task whose session never started has no author to ask: nothing waits,
+and since you've only just asked, the session may take the focus."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-walkthrough-stubs
+        (godel-reviewer-walkthrough (godel-task-get id))
+        (should-not answer)
+        (should opened)
+        (should (equal opened-focus '(t)))
+        (should-not (godel-reviewer-asking-since (godel-task-get id)))
+        (funcall opened 'the-buffer)
+        (should (eq (car sent) 'the-buffer))
+        (should-not (string-match-p "briefing" (cadr sent)))
+        (should-not notified)))))
+
+(ert-deftest godel-test-walkthrough-task-gone-while-asking ()
+  "A task torn down while its author answers: no session, no stale note."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-walkthrough-stubs
+        (godel-reviewer-walkthrough (godel-task-get id))
+        (should (godel-reviewer-asking-since (godel-task-get id)))
+        (godel-task-delete id)
+        (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+        (should-not opened))
+      (should-not (gethash id godel-reviewer--asking))
+      (should-not (gethash id godel-reviewer--walkthrough-starting)))))
+
+(ert-deftest godel-test-walkthrough-second-press-is-refused-while-starting ()
+  "Two `v w' in a row mustn't open two sessions or paste the first message twice."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-walkthrough-stubs
+        (godel-reviewer-walkthrough (godel-task-get id))
+        ;; Refused while the author is still writing...
+        (should-error (godel-reviewer-walkthrough (godel-task-get id)) :type 'user-error)
+        (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+        ;; ...and while the session is still coming up.
+        (should-error (godel-reviewer-walkthrough (godel-task-get id)) :type 'user-error)
+        (funcall opened 'the-buffer)
+        (should (= opens 1))
+        (should (= sends 1))
+        ;; Done starting: a new walkthrough is allowed (nothing is open).
+        (should-not (gethash id godel-reviewer--walkthrough-starting))
+        (godel-reviewer-walkthrough (godel-task-get id))
+        (should (godel-reviewer-asking-since (godel-task-get id)))))))
+
+(ert-deftest godel-test-walkthrough-second-press-is-refused-before-the-proxy-answers ()
+  "The window between the key press and the proxy check is covered too."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           proxy-callback)
+      (godel-test-with-walkthrough-stubs
+        (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (setq proxy-callback cb))))
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (should-error (godel-reviewer-walkthrough (godel-task-get id)) :type 'user-error)
+          (funcall proxy-callback t))
+        (should (godel-reviewer-asking-since (godel-task-get id)))))))
+
+(ert-deftest godel-test-walkthrough-already-open-is-shown-not-restarted ()
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           (name (godel-agent-buffer-name (plist-get task :worktree) godel-reviewer-walkthrough-instance))
+           (buffer (generate-new-buffer name))
+           shown)
+      (unwind-protect
+          (progn
+            (make-process :name "godel-test-session" :buffer buffer :command '("sleep" "30") :noquery t)
+            (godel-test-with-walkthrough-stubs
+              (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (setq shown b)))
+                        ((symbol-function 'godel-models-ensure-proxy)
+                         (lambda (&rest _) (error "Must not start another"))))
+                (godel-reviewer-walkthrough (godel-task-get id)))
+              (should (eq shown buffer))
+              (should (= opens 0))
+              (should-not answer)
+              (should (cl-some (lambda (m) (string-match-p "already open" m)) messages)))
+            (should-not (gethash id godel-reviewer--walkthrough-starting)))
+        (when-let* ((proc (get-buffer-process buffer))) (delete-process proc))
+        (kill-buffer buffer)))))
+
+(ert-deftest godel-test-walkthrough-failures-free-the-next-press ()
+  "A failure anywhere in starting must not leave `v w' refused for good."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      ;; The proxy won't start.
+      (godel-test-with-walkthrough-stubs
+        (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb nil "no proxy"))))
+          (godel-reviewer-walkthrough (godel-task-get id)))
+        (should (cl-some (lambda (m) (string-match-p "not started: no proxy" m)) messages))
+        (should-not (gethash id godel-reviewer--walkthrough-starting)))
+      ;; Opening the session fails.
+      (godel-test-with-walkthrough-stubs
+        (cl-letf (((symbol-function 'godel-reviewer--start-session)
+                   (lambda (&rest _) (error "claude-code-ide is broken"))))
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (funcall answer 0 (godel-test-briefing-output godel-test-briefing)))
+        (should (cl-some (lambda (m) (string-match-p "couldn't start: claude-code-ide is broken" m))
+                         messages))
+        (should-not (gethash id godel-reviewer--walkthrough-starting))
+        (should-not (godel-reviewer-asking-since (godel-task-get id))))
+      ;; Something unexpected right after the proxy check.
+      (godel-test-with-walkthrough-stubs
+        (cl-letf (((symbol-function 'godel-reviewer-briefing)
+                   (lambda (&rest _) (error "surprise"))))
+          (godel-reviewer-walkthrough (godel-task-get id)))
+        (should (cl-some (lambda (m) (string-match-p "couldn't start: surprise" m)) messages))
+        (should-not (gethash id godel-reviewer--walkthrough-starting))
+        (should-not (godel-reviewer-asking-since (godel-task-get id))))
+      ;; After all that, it still starts.
+      (godel-test-with-walkthrough-stubs
+        (godel-reviewer-walkthrough (godel-task-get id))
+        (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+        (funcall opened 'the-buffer)
+        (should (= sends 1))))))
+
+(ert-deftest godel-test-walkthrough-moved-on-keeps-the-briefing ()
+  "You left the workspace while the author wrote: nothing opens under you, the
+briefing is kept, and the next `v w' where you were opens at once with it."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-workspaces "task-ws" '("task-ws" "other-ws")
+        (godel-test-with-walkthrough-stubs
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (setq godel-test--workspace "other-ws")             ; the user moves on
+          (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+          ;; Nothing opened, no switching, the guard is free, the briefing kept.
+          (should-not opened)
+          (should-not godel-test--switches)
+          (should (equal godel-test--workspace "other-ws"))
+          (should-not (gethash id godel-reviewer--walkthrough-starting))
+          (should (gethash id godel-reviewer--prepared))
+          (should (equal (caar notified) "godel: walkthrough of rev is ready to start"))
+          (should (string-match-p "Press v w in task-ws" (cadr (car notified))))
+          ;; Back in the workspace: `v w' opens at once, with the kept
+          ;; briefing, without asking again, and with the focus (you just asked).
+          (setq godel-test--workspace "task-ws" notified nil)
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (should (= asks 1))
+          (should opened)
+          (should (equal opened-focus '(t)))
+          (funcall opened 'the-buffer)
+          (should (string-match-p "<briefing>\n## Problem" (cadr sent)))
+          (should-not notified)
+          (should-not godel-test--switches)
+          ;; Used up: a third walkthrough asks again.
+          (should-not (gethash id godel-reviewer--prepared))
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (should (= asks 2)))))))
+
+(ert-deftest godel-test-walkthrough-kept-briefing-expires ()
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-workspaces "task-ws" '("task-ws" "other-ws")
+        (godel-test-with-walkthrough-stubs
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (setq godel-test--workspace "other-ws")
+          (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+          (setq godel-test--workspace "task-ws")
+          ;; Too old to trust: ask again.
+          (let ((godel-reviewer-prepared-max-age 0))
+            (godel-reviewer-walkthrough (godel-task-get id)))
+          (should (= asks 2))
+          (should-not opened))))))
+
+(ert-deftest godel-test-walkthrough-in-the-minibuffer-doesnt-open-under-you ()
+  "Mid-prompt when the briefing arrives: the same, nothing opens."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           (in-minibuffer nil))
+      (godel-test-with-walkthrough-stubs
+        (cl-letf (((symbol-function 'active-minibuffer-window)
+                   (lambda () (and in-minibuffer (selected-window)))))
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (setq in-minibuffer t)                                ; M-x, a prompt...
+          (funcall answer 0 (godel-test-briefing-output godel-test-briefing))
+          (should-not opened)
+          (should (gethash id godel-reviewer--prepared))
+          (should (string-match-p "ready to start" (caar notified)))
+          (setq in-minibuffer nil)
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (should opened)
+          (should (= asks 1)))))))
+
+(ert-deftest godel-test-walkthrough-moved-on-and-no-briefing ()
+  "Moved on and the author couldn't brief it: the fact is kept, so the next
+`v w' opens at once, without a briefing and without asking the author again."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id)))
+      (godel-test-with-workspaces "task-ws" '("task-ws" "other-ws")
+        (godel-test-with-walkthrough-stubs
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (setq godel-test--workspace "other-ws")
+          (funcall answer 1 (godel-test-briefing-output "overloaded" t))
+          (should-not opened)
+          ;; The notification says what the next press will do.
+          (should (string-match-p "couldn't brief it, so it opens without one"
+                                  (cadr (car notified))))
+          ;; Kept, with no briefing in it.
+          (should (consp (gethash id godel-reviewer--prepared)))
+          (should-not (cdr (gethash id godel-reviewer--prepared)))
+          (setq godel-test--workspace "task-ws" notified nil)
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (should (= asks 1))                     ; not asked again
+          (should opened)
+          (should (equal opened-focus '(t)))
+          (funcall opened 'the-buffer)
+          (should (string-match-p "return 20" (cadr sent)))
+          (should-not (string-match-p "briefing" (cadr sent)))
+          (should-not (gethash id godel-reviewer--prepared)))))))
+
+(ert-deftest godel-test-briefing-request-speaks-to-the-author-about-a-third-reader ()
+  "The request is read by an author writing for a reviewer: the user is \"the
+user\", the author is \"I\", and nothing in it is addressed to the author as \"you\"."
+  ;; Whitespace folded: the docstring is wrapped across lines.
+  (let ((request (replace-regexp-in-string "[ \n\t]+" " " godel-reviewer--briefing-request)))
+    (should (string-match-p "not from the user" request))
+    (should (string-match-p "\"the user\"" request))
+    (should (string-match-p "\"I\"" request))
+    (should (string-match-p "\"the reviewer\"" request))
+    (should (string-match-p "Don't change any files" request))
+    ;; The old wording, addressed to the author as the user.
+    (should-not (string-match-p "you and I\\|what I told you\\|requirements I added\\|yours and mine" request))
+    (should (string-match-p "## Problem" request))
+    (should (string-match-p "## Solution" request))
+    (should (string-match-p "## Tested" request))))
+
+(ert-deftest godel-test-walkthrough-hung-start-doesnt-refuse-for-good ()
+  "A proxy check that never answers: after the deadline `v w' works again, and the
+abandoned attempt, if it ever wakes up, does nothing."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           old-proxy-callback)
+      (godel-test-with-walkthrough-stubs
+        (cl-letf (((symbol-function 'godel-models-ensure-proxy)
+                   (lambda (cb) (unless old-proxy-callback (setq old-proxy-callback cb)))))
+          (godel-reviewer-walkthrough (godel-task-get id))
+          (should-error (godel-reviewer-walkthrough (godel-task-get id)) :type 'user-error)
+          ;; Time passes; nothing ever answers.
+          (setf (car (gethash id godel-reviewer--walkthrough-starting))
+                (- (float-time) (1+ (godel-reviewer--walkthrough-deadline))))
+          (should-not (godel-reviewer--walkthrough-starting-p id))
+          (godel-reviewer-walkthrough (godel-task-get id)))          ; allowed again
+        (should (gethash id godel-reviewer--walkthrough-starting))
+        (let ((new-token (gethash id godel-reviewer--walkthrough-starting)))
+          ;; The first attempt's proxy check finally answers: ignored.
+          (funcall old-proxy-callback t)
+          (should (= asks 0))
+          (should-not opened)
+          (should (eq (gethash id godel-reviewer--walkthrough-starting) new-token)))))))
+
+(ert-deftest godel-test-walkthrough-abandoned-attempt-cant-free-the-new-one ()
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           (old (godel-reviewer--walkthrough-begin id))
+           (new (godel-reviewer--walkthrough-begin id)))
+      (godel-reviewer--walkthrough-done id old)
+      (should (eq (gethash id godel-reviewer--walkthrough-starting) new))
+      (godel-reviewer--walkthrough-done id new)
+      (should-not (gethash id godel-reviewer--walkthrough-starting)))))
+
+(ert-deftest godel-test-walkthrough-session-focus ()
+  "The session takes the focus only when asked to."
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (launch (godel-models-launch-env (godel-models-find "notdiamond[1m]") "medium"))
+           seen)
+      (require 'claude-code-ide)
+      (cl-letf (((symbol-function 'claude-code-ide)
+                 (lambda () (push claude-code-ide-focus-on-open seen)))
+                ((symbol-function 'message) #'ignore))
+        (godel-reviewer--start-session task launch #'ignore)
+        (godel-reviewer--start-session task launch #'ignore t))
+      (should (equal (reverse seen) '(nil t))))))
+
+;;;; Review points: effort fallback, one-line reasons, restart
+
+(ert-deftest godel-test-effort-pickers-offer-all-levels-without-a-list ()
+  "A model entry that doesn't say which efforts it supports still gets a choice."
+  (let ((bare '(:value "notdiamond[1m]" :name "Not Diamond" :resolved "notdiamond[1m]")))
+    (should (equal (godel-models-efforts bare) godel-effort-levels))
+    (should (equal (godel-models-efforts '(:efforts ("low" "high"))) '("low" "high"))))
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'idle))
+           (id (plist-get task :id))
+           (bare '(:value "notdiamond[1m]" :name "Not Diamond" :resolved "notdiamond[1m]"))
+           offered)
+      (cl-letf (((symbol-function 'godel-models-find) (lambda (&rest _) bare))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt coll &rest _) (setq offered coll) "low")))
+        ;; The new-task menu.
+        (godel-new--read-effort "Effort: " nil nil)
+        (should (equal offered godel-effort-levels))
+        ;; R on the board.
+        (setq offered nil)
+        (cl-letf (((symbol-function 'godel-board--task) (lambda () (godel-task-get id)))
+                  ((symbol-function 'godel-new--read-model) (lambda (&rest _) "notdiamond[1m]"))
+                  ((symbol-function 'godel-agent-live-p) #'ignore)
+                  ((symbol-function 'godel-agent-stop) #'ignore)
+                  ((symbol-function 'run-with-timer) #'ignore))
+          (godel-board-restart))
+        (should (equal offered godel-effort-levels))
+        (should (equal (plist-get (godel-task-get id) :effort) "low"))))))
+
+(ert-deftest godel-test-briefing-reason-is-one-short-line ()
+  "An API error can be long and many lines; the note gets one line, without a repeated prefix."
+  (should (equal (cadr (should-error (godel-reviewer-parse-briefing
+                                      (godel-test-briefing-output "overloaded" t))))
+                 "overloaded"))
+  (should (equal (cadr (should-error (godel-reviewer-parse-briefing "no json\n"))) "no answer"))
+  (should (equal (cadr (should-error (godel-reviewer-parse-briefing (godel-test-briefing-output "  "))))
+                 "the reply was empty"))
+  (should (equal (godel-reviewer--short-reason "API Error: 529\nrequest id: abc\n{\"big\": \"json\"}")
+                 "API Error: 529"))
+  (should (equal (godel-reviewer--short-reason "") "no details"))
+  (let ((short (godel-reviewer--short-reason (make-string 500 ?x))))
+    (should (<= (string-width short) 80))
+    (should (string-suffix-p "…" short)))
+  ;; Through the whole path: the waiting reviewer hears the short line.
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp))
+           (id (plist-get task :id))
+           result)
+      (cl-letf (((symbol-function 'godel-models--run)
+                 (lambda (_p _a callback &rest _)
+                   (funcall callback 1 (godel-test-briefing-output
+                                        (concat "API Error: 529 overloaded\nrequest id: abc\n"
+                                                (make-string 300 ?y))
+                                        t)))))
+        (godel-reviewer-briefing (godel-task-get id) (lambda (&rest r) (setq result r))))
+      (should (equal result '(nil "API Error: 529 overloaded"))))))
+
+(ert-deftest godel-test-restart-fails-a-review-that-was-running ()
+  "A review running when Emacs went away can't finish: it's failed after a restart,
+so `v r' isn't refused for good."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (id (plist-get task :id))
+           (repo (plist-get task :repo))
+           (done-task (godel-task-create :title "done" :repo repo :base "main")))
+      (godel-task-update id :review-status 'running :review-activity "asking the author"
+                         :review-started (float-time))
+      (godel-task-update (plist-get done-task :id) :review-status 'done :review-note "2 findings")
+      ;; A restart: nothing in memory, everything read back from the store.
+      (clrhash godel-task--tasks)
+      (setq godel-task--loaded-repos nil)
+      (godel-task-load-repo repo)
+      (let ((task (godel-task-get id)))
+        (should (eq (plist-get task :review-status) 'failed))
+        (should (equal (plist-get task :review-note) "interrupted by a restart"))
+        (should-not (plist-get task :review-activity)))
+      ;; Finished reviews are as they were.
+      (should (eq (plist-get (godel-task-get (plist-get done-task :id)) :review-status) 'done))
+      (should (equal (plist-get (godel-task-get (plist-get done-task :id)) :review-note) "2 findings"))
+      ;; And a review can be started again.
+      (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
+                ((symbol-function 'godel-notify) #'ignore)
+                ((symbol-function 'godel-reviewer--stream)
+                 (lambda (_p _a _i _e _m on-exit) (funcall on-exit 0 godel-test-reviewer-output))))
+        (godel-reviewer-run (godel-task-get id)))
+      (should (eq (plist-get (godel-task-get id) :review-status) 'done)))))
+
+(ert-deftest godel-test-review-list-shows-briefing ()
+  (godel-test-with-env
+    (let* ((task (godel-test-briefed-task tmp :review-briefing godel-test-briefing))
+           (id (plist-get task :id)))
+      (save-window-excursion
+        (godel-review-list (godel-task-get id))
+        (unwind-protect
+            (progn
+              (goto-char (point-min))
+              (search-forward "The author's briefing to the reviewer")
+              (let* ((section (magit-current-section))
+                     ;; Where the briefing's text is.  `search-forward' finds
+                     ;; hidden text too, so ask whether it's actually shown.
+                     (text-pos (lambda (text)
+                                 (save-excursion (goto-char (point-min))
+                                                 (search-forward text)
+                                                 (match-beginning 0)))))
+                ;; Hidden until TAB...
+                (should (oref section hidden))
+                (should (invisible-p (funcall text-pos "Users got logged out")))
+                (should (invisible-p (funcall text-pos "the user chose 5 min")))
+                ;; ...then shown.
+                (magit-section-show section)
+                (should-not (oref section hidden))
+                (should-not (invisible-p (funcall text-pos "Users got logged out")))
+                (should-not (invisible-p (funcall text-pos "the user chose 5 min")))
+                ;; And hidden again.
+                (magit-section-hide section)
+                (should (invisible-p (funcall text-pos "Users got logged out")))))
+          (kill-buffer (godel-review--list-buffer-name id)))))))
 
 (ert-deftest godel-test-review-list-findings ()
   (godel-test-with-env
@@ -1879,6 +3003,19 @@ walkthrough's window stays selected."
   (should (equal (godel-new--split "# Just a title") '("Just a title" . "# Just a title")))
   (should (string-match-p "\\`[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-4[0-9a-f]\\{3\\}-[89ab][0-9a-f]\\{3\\}-[0-9a-f]\\{12\\}\\'"
                           (godel-new--uuid))))
+
+(ert-deftest godel-test-new-task-effort-for-every-model ()
+  "-e is never greyed out (Not Diamond included); new tasks default to medium."
+  ;; `transient--suffix-predicate' is the condition transient itself checks for
+  ;; a suffix's `:inapt-if' (and `:if', ...).  -e has none, whatever the model.
+  ;; A plist read of the spec would pass even with the condition put back.
+  (should-not (transient--suffix-predicate (transient-get-suffix 'godel-new-task-menu "-e")))
+  (godel-test-with-env
+    (let ((godel-new--repo (godel-test-repo (expand-file-name "repo" tmp))))
+      (should (member "--effort=medium"
+                      (funcall (oref (get 'godel-new-task-menu 'transient--prefix) default-value))))
+      (should (member "--model=notdiamond[1m]"
+                      (funcall (oref (get 'godel-new-task-menu 'transient--prefix) default-value)))))))
 
 ;;;; TUI
 

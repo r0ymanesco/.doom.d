@@ -54,6 +54,8 @@ hooks, the board, and the review loop.
 | CLI | `notdiamond-claude`. Do not use the `claude` on PATH, which is Paradev's wrapper |
 | Claude binary | `claudeBinaryPath` in `~/.notdiamond/config.json` points at `~/.local/bin/claude`, so sessions don't go through Paradev's wrapper (set 2026-11-11) |
 | Model choice | Chosen per task from the list Claude reports through the SDK `initialize` request. Applied at launch with the wrapper's model pin (env vars), never with `/model X` or `/effort X`, which save the user's default. The pin is checked when the wrapper updates (`godel-models-check-pin`); there is no TUI fallback |
+| Effort | Chosen per task for every model, Not Diamond included; default `medium`. Pinned models get it as the effort pin and `--effort`, Not Diamond as `--effort` only, ready for effort tuning in the router. For now the router still picks effort itself on every turn: a review launched with `--effort medium` was routed to Opus at xhigh (2026-11-18). Changed 2026-11-17; before that, effort was greyed out for Not Diamond and never passed |
+| Reviewer context | An independent reviewer (`v r`, `v w`) first asks the task's author for a briefing: the problem, the solution and the decisions behind it (including what you decided in the conversation), and what was tested. It's a read-only headless fork of the author's session, as in ship drafting, so the live session is untouched. The reviewer gets it as the author's account to check against the code, not to trust (2026-11-18). Skipped for a task whose session never started, or with `godel-reviewer-ask-author` nil |
 | Paradev | Fully separate: do not read `.paradev/` config or import Paradev worktrees |
 | Name / prefix | `godel` / `godel-`, code in `lisp/godel/` |
 | Comment keys in diffs | `C` comment, `gn` / `gp` next / previous, only inside godel task diffs (`]c` / `[c` are taken by evil-collection's magit `]` / `[`) |
@@ -130,7 +132,7 @@ lisp/godel/
  :title "Fix auth token refresh" :prompt "the original prompt"
  :repo "~/code/foo/" :base "master" :branch "godel/fix-auth-a1b2"
  :worktree "~/.godel/worktrees/foo/fix-auth-a1b2/"
- :model "notdiamond[1m]" :effort "high" :permission-mode nil
+ :model "notdiamond[1m]" :effort "medium" :permission-mode nil
  ;; session
  :session-id "<uuid>"            ; chosen by godel (--session-id), updated on resume
  :transcript "/path.jsonl"       ; from SessionStart; "has started" for resume
@@ -301,9 +303,39 @@ value of `godel-model-options` (the table above).
 
 **Picking.** In the new-task transient, `-m` and `-e` open completion lists
 (ivy) with names and descriptions. Not Diamond is the default. Effort choices
-come from the selected model's `supportedEffortLevels`. When Not Diamond is
-selected, effort is greyed out because the router picks effort itself on every
-turn.
+come from the selected model's `supportedEffortLevels`, and effort can be set
+for every model, Not Diamond included; the default is `medium`
+(`godel-default-effort`). For now the router still picks effort itself on
+every turn. Not Diamond gets the effort so that effort tuning in the router
+can use it when it lands. (Until 2026-11-17, effort was greyed out for Not
+Diamond and never passed.)
+
+Checked on 2026-11-17 with the `initialize` request (no model call): the
+wrapper passes `--effort` through on a Not Diamond launch (it only strips
+`--model`), and Claude starts normally. An unknown value only gets a warning
+("ignoring it and using the default effort").
+
+Checked on 2026-11-18 on a real turn: an independent review launched with
+`--effort medium` on Not Diamond was served as Opus at **xhigh** for all 16
+of its requests (proxy log: `routeSource` `server` once, then `reuse`,
+`clientEntrypoint` `sdk-cli`). So the router ignores the flag today, as
+expected. (The two briefing forks that ran beside it were routed to Haiku
+at medium, which fits either an ignored flag or a coincidence; only the
+review is conclusive.) The proxy log is shared by every session, so pick
+the lines by time window and `clientEntrypoint`, or by `ccSessionId`.
+
+**Tasks that already exist.** Before 2026-11-17 the router never received an
+effort, so a Not Diamond task's stored `:effort` was never applied; now it is
+(`--effort`). Which stored values exist: tasks made through the new-task menu
+have none for Not Diamond (greyed-out options aren't part of the menu's
+arguments; checked on the real task stores, 2026-11-18: no Not Diamond task
+has one), and `R` stored none for it either. The one path that did store one
+is `godel-import-worktree`, which saves `godel-default-effort` with the
+default model: a Not Diamond task imported before the default became `medium`
+has `"high"`, shown on the board as `Not Diamond/high` and passed as
+`--effort high` on its next start or resume. Nobody chose it. Change it with
+`R` (the router ignores it for now). There's no automatic migration: a stored
+`"high"` on a Not Diamond task can't be told apart from one chosen since.
 
 **Applying the choice: the model pin.** The wrapper starts a session on a
 fixed model when these are set in the session's environment:
@@ -334,7 +366,7 @@ the chosen entry:
 
 | Chosen model | Pin variables | `--effort` | `SessionStart` model must be |
 |---|---|---|---|
-| **Not Diamond** (`value` `notdiamond[1m]`) | **all three removed** | not passed (the router picks effort) | `notdiamond[1m]` |
+| **Not Diamond** (`value` `notdiamond[1m]`) | **all three removed** | the task's effort (no effort pin; for now the router picks effort itself) | `notdiamond[1m]` |
 | Any other entry | all three set | same value as the effort pin | the entry's `resolvedModel` |
 
 The Not Diamond entry is recognised by its `resolvedModel` starting with
@@ -363,8 +395,7 @@ Launch steps:
    cleanly or one that was already running.
 2. Launch with the environment from `godel-models-launch-env` (bound in
    `process-environment` for this launch only, never set in Emacs's own
-   environment), `--session-id`, the hooks, `--effort` for pinned launches
-   only, and **no prompt**.
+   environment), `--session-id`, the hooks, `--effort`, and **no prompt**.
 3. If the trust dialog appears (repo never trusted), ask in the minibuffer
    "Trust <repo> for Claude?" and answer the dialog. Its default is
    "No, exit", so godel never just presses Enter. Worktrees of a trusted repo
@@ -416,7 +447,8 @@ never uses `/model X` or `/effort X`: both save the user's default for all
 new sessions.
 
 **Defaults and overrides.**
-- Defaults: `godel-default-model` (Not Diamond), `godel-default-effort`,
+- Defaults: `godel-default-model` (Not Diamond), `godel-default-effort`
+  (`medium`, for every model and for reviewers),
   `godel-default-permission-mode` (nil = Claude's own default, currently
   auto mode).
 - Per-repo overrides go in `.dir-locals.el`.
@@ -436,23 +468,27 @@ godel · 5 tasks in 2 repos      n new · RET open · m message · R restart · 
 
 ▾ doom  ~/.config/doom                                                         ●1 ◐1 ✓1
     Needs attention (1)
-      ● Fix ivy multi-select           Opus/high      permission: Bash(npm test)              3m
+      ● Fix ivy multi-select           Opus/high          permission: Bash(npm test)              3m
     Working (1)
-      ◐ Add tab badges                 Not Diamond    Edit(config.el)   ⟳ reviewing 18s · Grep 1m
+      ◐ Add tab badges                 Not Diamond/medium Edit(config.el)   ⟳ reviewing 18s · Grep 1m
     Needs review (1)
-      ✓ Hello file               #12   Haiku/low      PR opened: https://github.com/…         5m
+      ✓ Hello file               #12   Haiku/low          PR opened: https://github.com/…         5m
 
 ▾ notdiamond-code-proxy  ~/code/notdiamond-code-proxy                             ◐1 ○1
     Working (1)
-      ◐ Retry 429s                     Sonnet/high    Bash(go test ./...)                    30s
+      ◐ Retry 429s                     Sonnet/high        Bash(go test ./...)                    30s
     Idle (1)
-      ○ Bump deps                      Not Diamond    Done.                                   2h
+      ○ Bump deps                      Not Diamond/xhigh  Done.                                   2h
 ```
 
 Columns: state icon, title, the PR number if the task has one (coloured by
-the PR's state, see Ship), model, the last event, a badge (independent
-review progress or findings, see Independent reviewer; or a ship draft in
-progress, see Ship), and the time since the task last changed.
+the PR's state, see Ship), model/effort, the last event, a badge
+(independent review progress or findings, see Independent reviewer; or a
+ship draft in progress, see Ship), and the time since the task last changed.
+The effort is shown for every model, Not Diamond included, as the session is
+launched with it: the task's, else `godel-default-effort`. The column is 18
+wide, enough for "Not Diamond/medium". The sidebar has no model column; the
+`model:` line in a task's `TAB` details shows the same label.
 
 Keys (the same in the sidebar):
 
@@ -535,9 +571,9 @@ badge's icon and a `⇡` for a PR (coloured like the board's `#N`).
 
 1. **Transient** (`godel-new-task-menu`) with defaults filled in: `-b` base
    (completion over the repo's branches), `-m` model (names and
-   descriptions, like `/model`), `-e` effort (the model's supported levels;
-   greyed out for Not Diamond, re-checked after every change with
-   `:refresh-suffixes`), `-p` permission mode. Actions: `c` compose, `RET`
+   descriptions, like `/model`), `-e` effort (the model's supported levels,
+   for every model including Not Diamond; default `medium`), `-p` permission
+   mode. Actions: `c` compose, `RET`
    quick prompt in the minibuffer.
 2. **Compose buffer**. The first line is the title (it becomes the branch
    slug); the rest is the prompt. With only one line, it's both. The prompt
@@ -707,11 +743,93 @@ so the task's state doesn't change. Default model: Not Diamond
 
 - **Structured review (`v r`)**: a headless run (`notdiamond-claude -p
   --output-format json --no-session-persistence`, with `Edit`, `Write`,
-  `MultiEdit`, `NotebookEdit` and `Bash` disallowed) gets the task's prompt
-  and its full diff (cut at `godel-reviewer-max-diff` characters) and
-  returns findings as JSON between `<findings>` tags: file, lines, severity,
-  comment. They're stored as proposed findings and appear in the review
-  list. It saves no transcript.
+  `MultiEdit`, `NotebookEdit` and `Bash` disallowed) gets the task's prompt,
+  the author's briefing (below) and its full diff (cut at
+  `godel-reviewer-max-diff` characters) and returns findings as JSON
+  between `<findings>` tags: file, lines, severity, comment. They're stored
+  as proposed findings and appear in the review list. It saves no
+  transcript.
+- **The author's briefing.** A reviewer starting from the task's prompt and
+  the diff doesn't know what you and the author talked through: why this
+  approach, what you ruled out or told it to do, what was tested. So both
+  reviewers first ask the author (`godel-reviewer-briefing`):
+  - **How.** A headless **fork** of the author's session
+    (`-p --resume <id> --fork-session --no-session-persistence`, read-only,
+    `GODEL_SERVER` unset), on the author's own model and effort. It's the
+    ship-draft mechanism: the live session is untouched and nothing is
+    saved. It's asked for three parts: **Problem** (what was asked and why,
+    including what you added, constrained or corrected along the way),
+    **Solution** (what it changed and why, the decisions made in the
+    conversation by either of you, alternatives rejected, what was left
+    undone on purpose), and **Tested** (what it actually ran and the
+    results; what it didn't or couldn't test). It's told not to paste the
+    diff and to say plainly when something wasn't verified. The reply is
+    used as written.
+  - **How the reviewer uses it.** The briefing goes into the prompt as the
+    author's account, with an instruction to check it against the code and
+    to point out where the change doesn't do what it says or where the
+    testing leaves a gap, not to take it on trust. This matters: the first
+    real briefing (2026-11-18) attributed a design constraint to the user
+    that actually came from the code's comments. Treat the briefing as a
+    claim to verify.
+  - **How it's written.** The request to the author is written for the
+    author's own reader: it's told the request comes from the review tool
+    (not the user), that the reviewer is a third party who can't see the
+    conversation, that it should write about itself as "I", the person it
+    worked with as "the user", and the reviewer as "the reviewer". Before
+    (2026-11-18) the request was phrased as the user speaking ("what I told
+    you", "you and I"), so the briefing came back addressed to the user as
+    "you", and a reviewer read that "you" as itself. A test checks the
+    request for the old phrasing. (Its reply is still the author's own
+    words: it isn't checked, beyond the three headings.)
+  - **Skipped when** the task's session never started (no transcript to
+    resume), or `godel-reviewer-ask-author` is nil. The review then works
+    from the task's prompt and the diff, as before.
+  - **If the author can't answer** (an error, an empty reply, or no answer
+    within `godel-reviewer-briefing-timeout`, default 300 s, after which
+    the fork is killed, with everything it started: see below), the review
+    goes ahead without the briefing and
+    says so: the note reads "2 findings (the author couldn't brief it:
+    <reason>)" in place of "2 findings (briefed by the author)". The reason
+    is the first line of the error only, cut to 80 characters: an API error
+    can run to many lines and the note and the board's details have one.
+  - **Killing a hung author.** The process godel starts is the notdiamond
+    wrapper (node), whose child is the real `claude`. Checked with the real
+    wrapper (2026-11-18): killing the wrapper's pid alone leaves `claude`
+    running, orphaned, still spending tokens 20 s later; Emacs's
+    `kill-process` signals the child's whole process group (the child is its
+    own group leader), and both were gone within 3 s. The timeout uses
+    `kill-process`, and a test kills a real parent-and-child pair, so a change
+    that only killed the parent would fail it.
+  - **One question at a time.** A review and a walkthrough started together
+    share one answer instead of asking twice.
+  - **Seeing it.** A structured review's briefing is saved on the task
+    (`:review-briefing`) and shown in the review list under "The author's
+    briefing to the reviewer", collapsed until `TAB`, so you can see what
+    the reviewer was told. It isn't counted as a task update
+    (`godel-task--quiet-props`). It's the review's alone: a review clears
+    it when it starts, and a walkthrough neither writes nor clears it, so
+    the list never shows a briefing next to findings that came from another
+    one. (A walkthrough's briefing is in its first message, in its chat.)
+  - **Progress.** While it waits for the author, the board badge reads "⟳
+    reviewing 12s · asking the author".
+  - **A fresh diff.** The author can keep working while it writes the
+    briefing (up to the timeout), and the reviewer reads the files as they
+    are when it runs. So the diff in the prompt is taken again when the
+    briefing arrives (the walkthrough's, when its first message is sent); if
+    that fails, the one taken at the key press is used. (That one is still
+    taken first, so a task with no merge base fails at once.) The briefing
+    itself is as of the ask, so on a task that's still working it can be a
+    little behind the diff. The reviewer isn't told.
+  - **Cost.** One extra turn of the author's model over its whole
+    conversation: about 18 s for this task, longer and dearer for a long
+    task. The author is a fork, so a long transcript is read again.
+  - Tested live on this task: the briefing came back in ~18 s as the three
+    sections, the review's prompt carried it ahead of the diff, and the
+    review ended as "6 findings (briefed by the author)". Walkthrough, same
+    day: the `reviewing · asking the author` note showed for 61 s, the
+    session opened 0.1 s after the briefing arrived, and its first message
+    carried the briefing ahead of the diff.
 - **Progress:** the run's output is streamed (`--output-format stream-json
   --verbose`); each tool call becomes the task's `:review-activity`. The
   board row shows a badge, redrawn every second while any review runs:
@@ -725,7 +843,10 @@ so the task's state doesn't change. Default model: Not Diamond
   The sidebar shows just the icon after the title. A desktop notification
   says when it's done ("godel: review of <title> is done: N findings") or
   failed. Review progress doesn't count as a task update, so the row's age
-  column isn't reset (`godel-task--quiet-props`). Tested with a real review:
+  column isn't reset (`godel-task--quiet-props`). A review that was
+  running when Emacs went away can't finish: when its task loads, godel
+  marks it failed ("interrupted by a restart"), so the badge doesn't stay
+  and `v r` isn't refused for good. Tested with a real review:
   the badge ticked each second, showed `Glob(**/*.py)` while the reviewer
   searched, and ended at "◎ 4 findings" with the notification.
 - **Walkthrough (`v w`)**: an interactive claude-code-ide session in the
@@ -733,8 +854,57 @@ so the task's state doesn't change. Default model: Not Diamond
   claude-code-ide's instance-name prompt itself). It can't change files:
   `Edit`, `Write`, `MultiEdit`, `NotebookEdit` and `Bash` are disallowed.
   (Not plan mode: plan mode asks before every MCP tool call, godel's
-  included.) godel sends it the diff and asks it to go hunk by hunk,
-  showing each location with `godel_show_location`. You reply in its window.
+  included.) godel sends it the author's briefing and the diff and asks it
+  to go hunk by hunk, showing each location with `godel_show_location`. You
+  reply in its window. **The session opens only once the briefing is
+  back.** While the author writes it, the board shows `⟳ reviewing 12s ·
+  asking the author`, the same note the structured review shows, and nothing
+  is opened or typed into. When the briefing arrives the note clears, the
+  session opens, and the first message (carrying the briefing and the diff)
+  is sent once its input box is ready. If the author fails or doesn't answer
+  in time, the session still opens, without the briefing, and the message
+  says why. If you close the session before the first message, nothing is
+  sent. The note is kept in memory, not in the task store, so a restart
+  can't leave it behind.
+  - **It never opens under you.** The wait is 20-60 s, and you may have
+    moved on. Having waited, the session opens **without taking the focus**,
+    so what you're typing stays where you're typing it, and a notification
+    says "walkthrough of <title> is ready". If by then you've moved to
+    another workspace than the one `v w` was pressed in, or you're in the
+    minibuffer (a prompt, `M-x`), nothing is opened: the briefing is kept
+    (`godel-reviewer--prepared`, in memory, good for
+    `godel-reviewer-prepared-max-age` = 10 min), the notification says
+    "ready to start: press v w in <workspace>", and that `v w` opens the
+    session at once with the kept briefing, with the focus (you just asked),
+    without asking the author again. A kept entry is used once. If the
+    author had failed to brief it, that failure is kept too, so the next
+    `v w` opens at once without a briefing (the notification says so) rather
+    than asking again. With no author to ask there is no wait, and it opens
+    with the focus as before.
+    Not done, on purpose: switching to the original workspace and back.
+    Doom's `+workspace-switch` overwrites `+workspace--last` (where
+    `+workspace/other` goes), godel's own activation hook
+    (`godel-board-on-workspace-activated`, on a timer, so it sees the
+    workspace you've come back to) could resume a session you'd stopped, and
+    swapping window layouts under an open prompt is the very thing this
+    avoids. (An earlier version did switch; it was removed after review.
+    Hiding the session until shown was also considered, and rejected:
+    `godel_show_location` falls back to the selected frame's main window
+    when the session isn't displayed, so the first hunks would land in
+    whatever you're working on.)
+  - **One walkthrough at a time.** From `v w` until the first message has
+    gone in, `v w` again is refused ("already starting"): claude-code-ide
+    would start a second instance, and the first message would be pasted
+    into the first one twice. The guard also covers the proxy check before
+    the author is asked, and every failure frees it (proxy down, the
+    session won't open, an unexpected error). A step that never answers
+    (`notdiamond status`/`start` have no timeout) can't hold it forever
+    either: each attempt has a token and a deadline
+    (`godel-reviewer-briefing-timeout` + 180 s); after that `v w` works
+    again, and the abandoned attempt, if it ever wakes up, does nothing and
+    can't free the new one's guard. Once the session is open,
+    `v w` shows it instead of starting another (checked live against a
+    real session).
   - **It shows each hunk** with `godel_show_location(file, start_line,
     end_line?)`: the file opens in the main window beside the walkthrough,
     the lines highlighted (`godel-reviewer-focus`), your cursor stays in the
@@ -898,8 +1068,8 @@ What was built:
 - Task store, worktree lifecycle with `.godel.toml` setup/teardown, proxy
   guard, the two launch paths, trust dialog handling, hook-driven status,
   model checks at start and on resume.
-- New-task transient (model picker with descriptions; effort enabled only for
-  pinned models, refreshed on every change with `:refresh-suffixes`),
+- New-task transient (model picker with descriptions; effort for every
+  model, Not Diamond included),
   compose buffer with `:wq`/`:q!`, quick minibuffer prompt.
 - Board with `RET`, `TAB`, `n`, `m`, `R`, `x`, `gr`, `q`; badges on task
   workspaces in the tab bar (`godel-workspace-badge`, used by
@@ -925,8 +1095,8 @@ Phase 1 tests for the launch environment:
 - Unit (ERT): for the Not Diamond entry, the environment has no
   `NOTDIAMOND_RESEARCH_MODEL_PIN`, `NOTDIAMOND_RESEARCH_EFFORT_PIN` or
   `NOTDIAMOND_ROUTING` with a value, **even when Emacs's own environment has
-  them set**, and no `--effort` flag. For a pinned entry, all three are set and
-  `--effort` matches the effort pin.
+  them set**; the effort is passed as `--effort` only. For a pinned entry, all
+  three are set and `--effort` matches the effort pin.
 - Integration: a Not Diamond task's `SessionStart` reports `notdiamond[1m]`,
   and the proxy log shows routing decisions (not `passthrough`) for it, also
   while a pinned task is running.
