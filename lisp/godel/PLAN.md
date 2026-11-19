@@ -241,7 +241,8 @@ launch call:
 - `--resume <session-id>` replaces `--session-id` when restarting a session
   that has started before (it has a transcript).
 - `save-window-excursion` keeps the user's layout: claude-code-ide always
-  shows a new session in a side window.
+  shows a new session in a window (a side window if `claude-code-ide-use-side-window`, which
+  is off here: see below).
 - Sessions are named `*claude-code[REPO/SLUG]*`
   (`claude-code-ide-buffer-name-function`, set by `godel-mode`), so
   same-named worktrees in different repos don't collide. claude-code-ide
@@ -494,7 +495,7 @@ Keys (the same in the sidebar):
 
 | Key | Action |
 |---|---|
-| `RET` | Open the task's workspace (created if needed): magit-status of the worktree in the main window, Claude on the right. If the session isn't running, it's resumed (see Status from hooks). |
+| `RET` | Open the task's workspace (created if needed): magit-status of the worktree in the main window, Claude split off its left (between the sidebar and magit). If the session isn't running, it's resumed (see Status from hooks). |
 | `TAB` | Expand a task (id, branch, worktree, model, changes, comments, review, last message, session) or collapse a repo |
 | `n` | New task, in the repo at point (task or repo heading) |
 | `m` | Message the agent from the minibuffer |
@@ -565,7 +566,10 @@ badge's icon and a `⇡` for a PR (coloured like the board's `#N`).
 - `RET` switches to the task's workspace and the sidebar comes along; `n`
   starts a task without leaving the current one.
 - Left side window, kept by `delete-other-windows`, in its own slot so it can
-  share the left side with Treemacs. Claude stays on the right.
+  share the left side with Treemacs. Claude is not a side window (side windows on
+  one side stack vertically, so it would sit under the sidebar): `claude-code-ide-use-side-window`
+  is nil and config.el's `my/claude-code-display-left-of-main` splits it off the left edge of
+  the main window area, just right of the sidebar.
 
 ### New task (`n`)
 

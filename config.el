@@ -573,21 +573,24 @@ This must run BEFORE LSP starts so executable-find works correctly."
 (defvar claude-code-ide-width-narrow 100)
 (defvar claude-code-ide-width-wide 150)
 
-;; Layout on the left: treemacs | godel sidebar (slot 1) | Claude | magit.
-;; claude-code-ide assigns slots 0, 1, 2... per instance, so a left-side
-;; Claude window would land outside the godel sidebar.  Shift its slot past
-;; the sidebar's.
-(defun my/claude-code-slot-past-sidebar (orig buffer alist)
-  "Shift the slot of a left-side Claude window past the godel sidebar."
-  (let ((name (if (bufferp buffer) (buffer-name buffer) buffer)))
-    (if (and (eq (alist-get 'side alist) 'left)
-             (stringp name)
-             (string-prefix-p "*claude-code[" name))
-        (funcall orig buffer
-                 (cons (cons 'slot (+ 2 (alist-get 'slot alist 0)))
-                       (assq-delete-all 'slot (copy-sequence alist))))
-      (funcall orig buffer alist))))
-(advice-add 'display-buffer-in-side-window :around #'my/claude-code-slot-past-sidebar)
+;; Layout: treemacs | godel sidebar | Claude | magit.
+;; Side windows on the same side stack vertically, so Claude can't be a side
+;; window next to the sidebar.  `claude-code-ide-use-side-window' is off and
+;; Claude is a normal window split off the left edge of the main window area,
+;; i.e. just right of the sidebar.
+(defun my/claude-code-display-left-of-main (buffer alist)
+  "Display BUFFER in a new window at the left edge of the main window area.
+Sized to `claude-code-ide-window-width' when there is room."
+  (when-let* ((window (display-buffer-in-direction
+                       buffer (append '((direction . left) (window . main)) alist))))
+    (let ((delta (- claude-code-ide-window-width (window-body-width window))))
+      (when (and (not (zerop delta)) (window-resizable-p window delta t))
+        (window-resize window delta t)))
+    window))
+
+(add-to-list 'display-buffer-alist
+             '("\\`\\*claude-code\\["
+               (display-buffer-reuse-window my/claude-code-display-left-of-main)))
 
 (defun claude-code-ide-toggle-width ()
   "Toggle claude-code-ide window width between narrow and wide.
@@ -630,7 +633,7 @@ Updates the variable and resizes the live window if visible."
                       (let ((ghostel-scroll-on-input nil))
                         (apply orig-fn args))
                     (apply orig-fn args)))))
-  (setq claude-code-ide-window-side 'left)
+  (setq claude-code-ide-use-side-window nil) ; see my/claude-code-display-left-of-main
   (setq claude-code-ide-window-width claude-code-ide-width-wide)
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (advice-add 'claude-code-ide-insert-at-mentioned :after

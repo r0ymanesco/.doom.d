@@ -534,8 +534,11 @@ it.  Without Doom workspaces, the board opens in the selected window."
     (when (fboundp '+workspace-switch)
       (+workspace-switch (plist-get task :slug) t))
     ;; From the sidebar the selected window is a side window, which can't be
-    ;; made the only window.
-    (select-window (window-main-window))
+    ;; made the only window.  Pick a live window in the main area (the main
+    ;; window itself is internal when Claude and magit are side by side).
+    (select-window (or (get-window-with-predicate
+                        (lambda (w) (not (window-parameter w 'window-side))))
+                       (window-main-window)))
     (delete-other-windows)
     (if (file-directory-p (plist-get task :worktree))
         (magit-status-setup-buffer (plist-get task :worktree))
@@ -554,7 +557,7 @@ it.  Without Doom workspaces, the board opens in the selected window."
     (when (fboundp 'godel-sidebar-sync) (godel-sidebar-sync))))
 
 (defun godel-board--display-session (buffer select)
-  "Show the session BUFFER on the right; with SELECT, select its window."
+  "Show the session BUFFER between the sidebar and magit; with SELECT, select it."
   (when (fboundp 'claude-code-ide--display-buffer-in-side-window)
     (let ((window (or (get-buffer-window buffer)
                       (claude-code-ide--display-buffer-in-side-window buffer))))

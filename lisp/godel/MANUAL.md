@@ -111,8 +111,8 @@ session and checks that the session really runs on the chosen model.
    below it, `:wq`. You stay where you are; the task appears on the board
    as setting up, then working.
 2. `SPC G a` shows the board. When the task turns **needs review** (and you
-   get a notification), `RET` opens it: the worktree's magit status on the
-   left, the Claude session on the right, the sidebar on the far left.
+   get a notification), `RET` opens it: the sidebar on the far left, then the
+   Claude session, then the worktree's magit status.
 3. `d` (on the board) or `SPC G v d` (in the task) shows the diff. `C` on a
    line or selection adds a comment.
 4. `SPC G v s` sends your comments to the agent as one message. It works
@@ -166,7 +166,7 @@ draft, **cyan** merged, **red** closed without merging.
 
 | Key | Action |
 |---|---|
-| `RET` | Open the task (its workspace: magit on the left, Claude on the right); resumes the session if it isn't running |
+| `RET` | Open the task (its workspace: sidebar, Claude, then magit, left to right); resumes the session if it isn't running |
 | `TAB` | Expand a task (id, branch, worktree, model, changes, PR, comments, review, last message, session), or collapse a repo |
 | `n` | New task, in the repo at point |
 | `m` | Send the agent a message (typed in the minibuffer) |
@@ -249,7 +249,7 @@ base branch and a title, and adds it without a session; `R` starts one.
 **Opening it.** `RET` on the board or sidebar, or switching to its
 workspace. If the session isn't running (after an Emacs restart, say), it's
 resumed with its conversation, on the task's model. It takes a couple of
-seconds. The Claude panel is on the right; `SPC c w` toggles its width.
+seconds. The Claude window sits between the sidebar and magit; `SPC c w` toggles its width.
 
 **Talking to the agent.** Type in its window as usual, or `m` on the board
 for a one-line message without opening the task.
