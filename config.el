@@ -578,12 +578,17 @@ This must run BEFORE LSP starts so executable-find works correctly."
 ;; window next to the sidebar.  `claude-code-ide-use-side-window' is off and
 ;; Claude is a normal window split off the left edge of the main window area,
 ;; i.e. just right of the sidebar.
+(defvar my/claude-code-main-fraction 0.6
+  "Share of the main window area (everything but the sidebar) Claude gets.")
+
 (defun my/claude-code-display-left-of-main (buffer alist)
   "Display BUFFER in a new window at the left edge of the main window area.
-Sized to `claude-code-ide-window-width' when there is room."
+Takes `my/claude-code-main-fraction' of the main window area."
   (when-let* ((window (display-buffer-in-direction
                        buffer (append '((direction . left) (window . main)) alist))))
-    (let ((delta (- claude-code-ide-window-width (window-body-width window))))
+    (let ((delta (- (round (* my/claude-code-main-fraction
+                              (window-total-width (window-main-window))))
+                    (window-total-width window))))
       (when (and (not (zerop delta)) (window-resizable-p window delta t))
         (window-resize window delta t)))
     window))
