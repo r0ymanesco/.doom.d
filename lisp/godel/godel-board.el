@@ -506,7 +506,7 @@ it.  Without Doom workspaces, the board opens in the selected window."
       (+workspace-switch godel-board-workspace t)
       (if-let* ((window (get-buffer-window buffer)))
           (select-window window)
-        (select-window (window-main-window))
+        (godel-board--select-content-window)
         (delete-other-windows)
         (switch-to-buffer buffer)))))
 
@@ -526,6 +526,15 @@ it.  Without Doom workspaces, the board opens in the selected window."
   (interactive)
   (if godel-board--compact (godel-sidebar-hide) (quit-window)))
 
+(defun godel-board--select-content-window ()
+  "Select a live window in the main area, preferring one not showing Claude.
+From the sidebar the selected window is a side window, which can't be made
+the only window, and the main window is internal once Claude and magit sit
+side by side.  The window is undedicated, so what's shown next can replace it."
+  (let ((window (godel-agent-content-window)))
+    (set-window-dedicated-p window nil)
+    (select-window window)))
+
 (defun godel-board-visit ()
   "Open the task's workspace: magit-status in the main window, Claude beside it."
   (interactive)
@@ -533,12 +542,7 @@ it.  Without Doom workspaces, the board opens in the selected window."
          (buffer (godel-agent-buffer task)))
     (when (fboundp '+workspace-switch)
       (+workspace-switch (plist-get task :slug) t))
-    ;; From the sidebar the selected window is a side window, which can't be
-    ;; made the only window.  Pick a live window in the main area (the main
-    ;; window itself is internal when Claude and magit are side by side).
-    (select-window (or (get-window-with-predicate
-                        (lambda (w) (not (window-parameter w 'window-side))))
-                       (window-main-window)))
+    (godel-board--select-content-window)
     (delete-other-windows)
     (if (file-directory-p (plist-get task :worktree))
         (magit-status-setup-buffer (plist-get task :worktree))
@@ -593,7 +597,7 @@ workspace."
   (interactive)
   (require 'godel-review)
   (let ((task (godel-board--task)))
-    (when godel-board--compact (select-window (window-main-window)))
+    (when godel-board--compact (godel-board--select-content-window))
     (godel-review-diff task)))
 
 (defun godel-board-review ()

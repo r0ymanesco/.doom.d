@@ -2827,6 +2827,62 @@ walkthrough's window stays selected."
         (kill-buffer review)
         (when-let* ((b (get-file-buffer (expand-file-name "app.py" wt)))) (kill-buffer b))))))
 
+(ert-deftest godel-test-content-window-skips-claude-and-side-windows ()
+  "With Claude and magit side by side the main window is internal; the
+content window is the one that isn't Claude, never a side window."
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((claude (get-buffer-create "*claude-code[repo/slug]*"))
+           (magit (get-buffer-create "*magit: x*"))
+           (side (display-buffer-in-side-window (get-buffer-create "*godel-sidebar*")
+                                                '((side . left) (slot . 1)))))
+      (unwind-protect
+          (progn
+            (switch-to-buffer magit)
+            (let ((claude-window (split-window (window-main-window) nil 'left)))
+              (set-window-buffer claude-window claude)
+              (select-window claude-window)
+              (should-not (window-live-p (window-main-window)))
+              ;; Even with Claude selected, magit's window is chosen.
+              (should (eq (window-buffer (godel-agent-content-window)) magit))
+              (select-window side)
+              (should (eq (window-buffer (godel-agent-content-window t)) magit))
+              ;; Only Claude left: strict gives nil, otherwise Claude's window.
+              (set-window-buffer (get-buffer-window magit) claude)
+              (should-not (godel-agent-content-window t))
+              (should (eq (window-buffer (godel-agent-content-window)) claude))))
+        (kill-buffer claude) (kill-buffer magit)))))
+
+(ert-deftest godel-test-walkthrough-show-location-beside-claude ()
+  "The file opens in the window that isn't Claude, and Claude's window keeps
+the conversation."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (wt (plist-get task :worktree))
+           (review (get-buffer-create (godel-agent-buffer-name wt "review")))
+           (author (get-buffer-create (godel-agent-buffer-name wt)))
+           (ctx (list :project-dir wt :buffer review)))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer (get-buffer-create "*magit: x*"))
+            (let ((author-window (split-window (window-main-window) nil 'left))
+                  (side (display-buffer-in-side-window review '((side . right)))))
+              (set-window-buffer author-window author)
+              (select-window side)
+              (cl-letf (((symbol-function 'claude-code-ide-mcp-server-get-session-context)
+                         (lambda (&rest _) ctx)))
+                (godel-reviewer-tool-show-location "app.py" 4 5))
+              (sleep-for 0.05)
+              (should (eq (window-buffer author-window) author))
+              (should (eq (selected-window) side))
+              (should (equal (buffer-file-name
+                              (window-buffer (godel-agent-content-window t)))
+                             (expand-file-name "app.py" wt)))))
+        (when (overlayp godel-reviewer--focus-overlay) (delete-overlay godel-reviewer--focus-overlay))
+        (dolist (b (list review author (get-buffer "*magit: x*"))) (when b (kill-buffer b)))
+        (when-let* ((b (get-file-buffer (expand-file-name "app.py" wt)))) (kill-buffer b))))))
+
 (ert-deftest godel-test-review-history ()
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp)))

@@ -572,9 +572,16 @@ This must run BEFORE LSP starts so executable-find works correctly."
 ;; Claude code
 ;; Layout: treemacs | godel sidebar | Claude | magit.
 ;; Side windows on the same side stack vertically, so Claude can't be a side
-;; window next to the sidebar.  `claude-code-ide-use-side-window' is off and
-;; Claude is a normal window split off the left edge of the main window area,
-;; i.e. just right of the sidebar.
+;; window next to the sidebar.  A project's main Claude session is instead
+;; split off the left edge of the main window area, just right of the sidebar,
+;; and dedicated so other displays (magit, diffs) don't take it over.  Extra
+;; instances (the godel walkthrough, `:review') keep claude-code-ide's own
+;; right side window.
+;;
+;; This hooks claude-code-ide's display function with
+;; `display-buffer-overriding-action' rather than a `display-buffer-alist'
+;; entry: Doom's popup module swaps `display-buffer-alist' out after config.el
+;; loads, which would drop a top-level entry.
 (defvar my/claude-code-main-fraction 0.6
   "Share of the main window area (everything but the sidebar) Claude gets.")
 (defvar my/claude-code-fractions '(0.6 0.4)
@@ -596,9 +603,19 @@ Takes `my/claude-code-main-fraction' of the main window area."
     (my/claude-code-fit-window window)
     window))
 
-(add-to-list 'display-buffer-alist
-             '("\\`\\*claude-code\\["
-               (display-buffer-reuse-window my/claude-code-display-left-of-main)))
+(defun my/claude-code-main-session-p (buffer)
+  "Non-nil if BUFFER is a project's main Claude session, not an extra instance."
+  (string-match-p "\\`\\*claude-code\\[[^:]*\\]\\*\\'" (buffer-name buffer)))
+
+(defun my/claude-code-display-advice (orig buffer)
+  "Show main Claude sessions left of the main window area (around ORIG)."
+  (if (my/claude-code-main-session-p buffer)
+      (let ((display-buffer-overriding-action
+             '((display-buffer-reuse-window my/claude-code-display-left-of-main))))
+        (funcall orig buffer))
+    (funcall orig buffer)))
+(advice-add 'claude-code-ide--display-buffer-in-side-window
+            :around #'my/claude-code-display-advice)
 
 (defun claude-code-ide-toggle-width ()
   "Toggle Claude's share of the main window area between 60% and 40%.
@@ -637,7 +654,9 @@ Updates `my/claude-code-main-fraction' and resizes visible Claude windows."
                       (let ((ghostel-scroll-on-input nil))
                         (apply orig-fn args))
                     (apply orig-fn args)))))
-  (setq claude-code-ide-use-side-window nil) ; see my/claude-code-display-left-of-main
+  ;; Right side window for extra instances (the godel walkthrough); main
+  ;; sessions are sized by `my/claude-code-main-fraction' instead.
+  (setq claude-code-ide-window-width 150)
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (advice-add 'claude-code-ide-insert-at-mentioned :after
               (lambda (&rest _) (claude-code-ide-switch-to-buffer))))

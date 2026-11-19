@@ -16,6 +16,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'subr-x)
+(require 'seq)
 (require 'godel-task)
 (require 'godel-models)
 (require 'godel-status)
@@ -79,6 +80,22 @@ don't collide; other directories keep claude-code-ide's usual name."
   "Non-nil if TASK has a running session."
   (when-let* ((buf (godel-agent-buffer task)))
     (process-live-p (get-buffer-process buf))))
+
+(defun godel-agent-session-window-p (window)
+  "Non-nil if WINDOW shows a Claude session buffer."
+  (string-prefix-p "*claude-code[" (buffer-name (window-buffer window))))
+
+(defun godel-agent-content-window (&optional strict)
+  "A live window in the main area for showing magit, diffs and files.
+Side windows are skipped, and so are windows showing a Claude session, so the
+conversation isn't replaced.  The selected window comes first.  If only
+Claude windows are left, return one of them, or nil if STRICT.  (The main
+window itself can't be used: it's internal once Claude and magit sit side by
+side.)"
+  (let ((windows (seq-remove (lambda (w) (window-parameter w 'window-side))
+                             (window-list nil 'no-minibuf))))
+    (or (seq-find (lambda (w) (not (godel-agent-session-window-p w))) windows)
+        (and (not strict) (car windows)))))
 
 ;;;; Launch
 

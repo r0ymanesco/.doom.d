@@ -206,7 +206,7 @@ keep their state.
 **Opening a task resumes its session.** If a task's session isn't running
 (after an Emacs restart, say), opening the task resumes it with
 `--resume <session-id>` on the task's model (pinned, or Not Diamond without
-pins), and shows it on the right once the launch has returned. This happens
+pins), and shows it between the sidebar and magit once the launch has returned. This happens
 on `RET` (board or sidebar) and on any switch to the task's workspace. The
 task keeps its state: a needs-review task stays needs-review (`:resume-state`,
 restored at `SessionStart`); stopped tasks come back idle. Not resumed
@@ -568,8 +568,13 @@ badge's icon and a `⇡` for a PR (coloured like the board's `#N`).
 - Left side window, kept by `delete-other-windows`, in its own slot so it can
   share the left side with Treemacs. Claude is not a side window (side windows on
   one side stack vertically, so it would sit under the sidebar): `claude-code-ide-use-side-window`
-  is nil and config.el's `my/claude-code-display-left-of-main` splits it off the left edge of
-  the main window area, just right of the sidebar.
+  is left on for extra instances (the walkthrough keeps its right side window), and config.el
+  advises claude-code-ide's display function so a project's main session is split off the left
+  edge of the main window area by `my/claude-code-display-left-of-main`, just right of the
+  sidebar, and dedicated so magit and diffs don't replace it. (It's `display-buffer-overriding-action`,
+  not a `display-buffer-alist` entry: Doom's popup module replaces that list after config.el
+  loads.) Code that needs a window for magit, a diff or a file uses `godel-agent-content-window`:
+  the main window is internal when Claude and magit sit side by side.
 
 ### New task (`n`)
 
