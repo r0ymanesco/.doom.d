@@ -88,6 +88,14 @@ router still picks the effort for each turn itself."
   '("NOTDIAMOND_RESEARCH_MODEL_PIN" "NOTDIAMOND_RESEARCH_EFFORT_PIN" "NOTDIAMOND_ROUTING")
   "Environment variables that pin a notdiamond session to one model.")
 
+(defconst godel-scrubbed-variables
+  (append godel-pin-variables '("ANTHROPIC_API_KEY"))
+  "Variables godel removes from every Claude launch's environment.
+The pin variables, so only godel's own choice of model applies; and
+ANTHROPIC_API_KEY, which a headless (-p) launch uses without asking, even
+when it was declined in interactive sessions.  That would bypass the
+forwarded subscription login that Not Diamond is set up to use.")
+
 (defun godel-models-cache-file ()
   (expand-file-name "models.eld" godel-directory))
 
@@ -219,13 +227,13 @@ CALLBACK, if non-nil, is called with the new list (or nil on failure)."
 ;;;; Launch environment
 
 (defun godel-models--clean-env (&optional env)
-  "Return ENV (default `process-environment') with the pin variables unset.
+  "Return ENV (default `process-environment') with `godel-scrubbed-variables' unset.
 The entries are removed, and bare names are put in front, which unsets
 them for child processes even if something later appends a value."
-  (append godel-pin-variables
+  (append godel-scrubbed-variables
           (cl-remove-if (lambda (entry)
                           (cl-some (lambda (var) (string-prefix-p (concat var "=") entry))
-                                   godel-pin-variables))
+                                   godel-scrubbed-variables))
                         (or env process-environment))))
 
 (defun godel-models-launch-env (entry effort &optional env)
@@ -245,7 +253,7 @@ if EFFORT is nil)."
                                (concat "NOTDIAMOND_RESEARCH_EFFORT_PIN=" effort)
                                "NOTDIAMOND_ROUTING=off")
                          ;; Drop the bare names `godel-models--clean-env' added.
-                         (nthcdr (length godel-pin-variables) clean))
+                         (nthcdr (length godel-scrubbed-variables) clean))
             :args (list "--effort" effort)
             :expect (plist-get entry :resolved)
             :pinned t))))

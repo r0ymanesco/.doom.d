@@ -115,7 +115,8 @@
 
 (defconst godel-test-inherited
   '("NOTDIAMOND_RESEARCH_MODEL_PIN=opus" "NOTDIAMOND_RESEARCH_EFFORT_PIN=max"
-    "NOTDIAMOND_ROUTING=off" "PATH=/usr/bin:/bin" "HOME=/tmp"))
+    "NOTDIAMOND_ROUTING=off" "ANTHROPIC_API_KEY=sk-test-not-a-real-key"
+    "PATH=/usr/bin:/bin" "HOME=/tmp"))
 
 (defun godel-test-env-value (env var)
   "Value of VAR in ENV as a child process would see it (first entry wins)."
@@ -131,7 +132,7 @@
 
 (ert-deftest godel-test-launch-env-router-strips-inherited-pins ()
   (let ((launch (godel-models-launch-env godel-test-router "high" godel-test-inherited)))
-    (dolist (var godel-pin-variables)
+    (dolist (var godel-scrubbed-variables)
       (should-not (godel-test-env-value (plist-get launch :env) var))
       (should-not (cl-some (lambda (e) (string-prefix-p (concat var "=") e))
                            (plist-get launch :env))))
@@ -175,12 +176,12 @@
 
 (defun godel-test-leaks (lines &optional names)
   "The LINES (NAME=VALUE) that give one of NAMES a value.
-NAMES defaults to `godel-pin-variables'.  Only these are checked, not every
+NAMES defaults to `godel-scrubbed-variables'.  Only these are checked, not every
 NOTDIAMOND_ variable: the tests run wherever you are, often inside a
 notdiamond session whose own variables (NOTDIAMOND_CLAUDE_SESSION_ID, ...)
 the wrapper resets on each launch anyway.  Returning just the offending lines
 also keeps a failure from printing the whole environment, keys and all."
-  (let ((names (or names godel-pin-variables)))
+  (let ((names (or names godel-scrubbed-variables)))
     (seq-filter (lambda (line)
                   (cl-some (lambda (name) (string-prefix-p (concat name "=") line)) names))
                 lines)))
@@ -193,6 +194,9 @@ also keeps a failure from printing the whole environment, keys and all."
          (pinned (godel-test-child-env
                   (plist-get (godel-models-launch-env godel-test-sonnet "low" inherited) :env))))
     (should-not (godel-test-leaks router))
+    ;; The API key never reaches a child, pinned or not: a headless launch
+    ;; would use it without asking and bypass the forwarded login.
+    (should-not (godel-test-leaks pinned '("ANTHROPIC_API_KEY")))
     (should (member "NOTDIAMOND_RESEARCH_MODEL_PIN=sonnet" pinned))
     (should (member "NOTDIAMOND_RESEARCH_EFFORT_PIN=low" pinned))
     (should (member "NOTDIAMOND_ROUTING=off" pinned))))
@@ -383,7 +387,7 @@ also keeps a failure from printing the whole environment, keys and all."
   (should-not (godel-status-same-model-p "claude-opus-5-5" "notdiamond[1m]")))
 
 (ert-deftest godel-test-proxy-guard-starts-clean-proxy ()
-  "No proxy running: godel starts one, and the pin variables don't reach it."
+  "No proxy running: godel starts one, and the pin variables and API key don't reach it."
   (godel-test-with-env
     (let* ((state (expand-file-name "proxy-started" tmp))
            (env-log (expand-file-name "start-env" tmp))
@@ -392,7 +396,8 @@ also keeps a failure from printing the whole environment, keys and all."
            ;; Nothing listening, so the direct check fails and the CLI is used.
            (godel-proxy-address (cons "127.0.0.1" (godel-test-free-port)))
            (process-environment (append '("NOTDIAMOND_ROUTING=off"
-                                          "NOTDIAMOND_RESEARCH_MODEL_PIN=opus")
+                                          "NOTDIAMOND_RESEARCH_MODEL_PIN=opus"
+                                          "ANTHROPIC_API_KEY=sk-test-not-a-real-key")
                                         process-environment))
            (result 'pending))
       (with-temp-file fake
@@ -1203,7 +1208,9 @@ instance-name prompt bug): it waits for the first and gets its buffer."
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp))
            (id (plist-get task :id))
-           (process-environment (cons "GODEL_SERVER=/should/not/leak" process-environment))
+           (process-environment (append '("GODEL_SERVER=/should/not/leak"
+                                          "ANTHROPIC_API_KEY=sk-test-not-a-real-key")
+                                        process-environment))
            ran activity-seen badge-seen notified)
       (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
                 ((symbol-function 'godel-notify) (lambda (title body) (push (list title body) notified)))
@@ -1233,7 +1240,7 @@ instance-name prompt bug): it waits for the first and gets its buffer."
       ;; Pin variables and GODEL_SERVER are unset for the child (bare names in
       ;; front), even though Emacs has GODEL_SERVER set.
       (should-not (godel-test-leaks (godel-test-child-env (plist-get ran :env))
-                                    (cons "GODEL_SERVER" godel-pin-variables)))
+                                    (cons "GODEL_SERVER" godel-scrubbed-variables)))
       (should (equal (car (plist-get ran :env)) "GODEL_SERVER"))
       (should (string-match-p "return 20" (plist-get ran :input)))
       (let ((task (godel-task-get id)))

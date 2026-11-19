@@ -382,6 +382,15 @@ let-bound `process-environment`, which unsets them for the child process. If
 `godel-mode` finds any of them in Emacs's own environment at startup, it warns
 once.
 
+**Every Claude launch also drops `ANTHROPIC_API_KEY`** (`godel-scrubbed-variables`
+is the pin variables plus it). Emacs often has it from the shell. Interactive
+Claude Code only uses an env key you've approved, but a headless `-p` launch (the
+reviewer, the author's briefing, PR drafting, the model-list refresh) uses it
+without asking: the `notdiamond` wrapper counts any `-p` or non-TTY launch as
+approving it. That would bill those runs to the API key instead of the
+forwarded subscription login Not Diamond is set up to use
+(`apiKeySource` is `none` with the login, `ANTHROPIC_API_KEY` with the key).
+
 Launch steps:
 1. **Proxy guard (every launch).** A proxy started by a pinned launch would
    inherit `NOTDIAMOND_ROUTING=off` and turn routing off for **every** session
