@@ -570,9 +570,6 @@ This must run BEFORE LSP starts so executable-find works correctly."
 
 
 ;; Claude code
-(defvar claude-code-ide-width-narrow 100)
-(defvar claude-code-ide-width-wide 150)
-
 ;; Layout: treemacs | godel sidebar | Claude | magit.
 ;; Side windows on the same side stack vertically, so Claude can't be a side
 ;; window next to the sidebar.  `claude-code-ide-use-side-window' is off and
@@ -580,17 +577,23 @@ This must run BEFORE LSP starts so executable-find works correctly."
 ;; i.e. just right of the sidebar.
 (defvar my/claude-code-main-fraction 0.6
   "Share of the main window area (everything but the sidebar) Claude gets.")
+(defvar my/claude-code-fractions '(0.6 0.4)
+  "Fractions `claude-code-ide-toggle-width' switches between.")
+
+(defun my/claude-code-fit-window (window)
+  "Resize Claude's WINDOW to `my/claude-code-main-fraction' of the main area."
+  (let ((delta (- (round (* my/claude-code-main-fraction
+                            (window-total-width (window-main-window))))
+                  (window-total-width window))))
+    (when (and (not (zerop delta)) (window-resizable-p window delta t))
+      (window-resize window delta t))))
 
 (defun my/claude-code-display-left-of-main (buffer alist)
   "Display BUFFER in a new window at the left edge of the main window area.
 Takes `my/claude-code-main-fraction' of the main window area."
   (when-let* ((window (display-buffer-in-direction
                        buffer (append '((direction . left) (window . main)) alist))))
-    (let ((delta (- (round (* my/claude-code-main-fraction
-                              (window-total-width (window-main-window))))
-                    (window-total-width window))))
-      (when (and (not (zerop delta)) (window-resizable-p window delta t))
-        (window-resize window delta t)))
+    (my/claude-code-fit-window window)
     window))
 
 (add-to-list 'display-buffer-alist
@@ -598,21 +601,17 @@ Takes `my/claude-code-main-fraction' of the main window area."
                (display-buffer-reuse-window my/claude-code-display-left-of-main)))
 
 (defun claude-code-ide-toggle-width ()
-  "Toggle claude-code-ide window width between narrow and wide.
-Updates the variable and resizes the live window if visible."
+  "Toggle Claude's share of the main window area between 60% and 40%.
+Updates `my/claude-code-main-fraction' and resizes visible Claude windows."
   (interactive)
-  (let ((new-width (if (= claude-code-ide-window-width claude-code-ide-width-wide)
-                       claude-code-ide-width-narrow
-                     claude-code-ide-width-wide)))
-    (setq claude-code-ide-window-width new-width)
-    ;; Resize the live claude-code-ide window if one is showing
-    (dolist (win (window-list))
-      (let ((buf (window-buffer win)))
-        (when (and buf (string-match-p "\\*claude-code\\[" (buffer-name buf)))
-          (let ((delta (- new-width (window-body-width win))))
-            (when (window-resizable-p win delta t)
-              (window-resize win delta t))))))
-    (message "Claude Code width: %d" new-width)))
+  (setq my/claude-code-main-fraction
+        (if (= my/claude-code-main-fraction (car my/claude-code-fractions))
+            (cadr my/claude-code-fractions)
+          (car my/claude-code-fractions)))
+  (dolist (win (window-list))
+    (when (string-match-p "\\`\\*claude-code\\[" (buffer-name (window-buffer win)))
+      (my/claude-code-fit-window win)))
+  (message "Claude Code width: %d%%" (round (* 100 my/claude-code-main-fraction))))
 
 (use-package! claude-code-ide
   :config
@@ -639,7 +638,6 @@ Updates the variable and resizes the live window if visible."
                         (apply orig-fn args))
                     (apply orig-fn args)))))
   (setq claude-code-ide-use-side-window nil) ; see my/claude-code-display-left-of-main
-  (setq claude-code-ide-window-width claude-code-ide-width-wide)
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (advice-add 'claude-code-ide-insert-at-mentioned :after
               (lambda (&rest _) (claude-code-ide-switch-to-buffer))))
