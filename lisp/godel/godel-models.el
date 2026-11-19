@@ -90,11 +90,14 @@ router still picks the effort for each turn itself."
 
 (defconst godel-scrubbed-variables
   (append godel-pin-variables '("ANTHROPIC_API_KEY"))
-  "Variables godel removes from every Claude launch's environment.
+  "Variables godel removes (`godel-models--clean-env') from the environment of
+every Claude launch, and of the notdiamond proxy it starts.
 The pin variables, so only godel's own choice of model applies; and
 ANTHROPIC_API_KEY, which a headless (-p) launch uses without asking, even
 when it was declined in interactive sessions.  That would bypass the
-forwarded subscription login that Not Diamond is set up to use.")
+forwarded subscription login that Not Diamond is set up to use.  The proxy
+doesn't read ANTHROPIC_API_KEY (it forwards the client's own credential),
+so dropping it there changes nothing; the pin variables are what matter.")
 
 (defun godel-models-cache-file ()
   (expand-file-name "models.eld" godel-directory))
@@ -440,9 +443,10 @@ through `notdiamond status'."
 
 (defun godel-models-ensure-proxy (callback)
   "Make sure the notdiamond proxy is running, then call CALLBACK with t.
-If no proxy is running, start one with the pin variables unset, so it
-can't inherit routing off from a pinned launch.  CALLBACK gets nil and
-an error message if the proxy doesn't come up."
+If no proxy is running, start one with `godel-scrubbed-variables' unset:
+the pin variables, so it can't inherit routing off from a pinned launch (it
+serves every session), and ANTHROPIC_API_KEY, which it doesn't use.  CALLBACK
+gets nil and an error message if the proxy doesn't come up."
   (godel-models--proxy-up-p
    (lambda (up)
      (if up

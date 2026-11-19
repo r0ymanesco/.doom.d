@@ -241,8 +241,10 @@ launch call:
 - `--resume <session-id>` replaces `--session-id` when restarting a session
   that has started before (it has a transcript).
 - `save-window-excursion` keeps the user's layout: claude-code-ide always
-  shows a new session in a window (a side window if `claude-code-ide-use-side-window`, which
-  is off here: see below).
+  shows a new session in a window.  `claude-code-ide-use-side-window` is on (its
+  default), so extra instances such as the walkthrough get its right side
+  window; a task's own session is split off beside the sidebar instead (see
+  Sidebar).
 - Sessions are named `*claude-code[REPO/SLUG]*`
   (`claude-code-ide-buffer-name-function`, set by `godel-mode`), so
   same-named worktrees in different repos don't collide. claude-code-ide
@@ -390,6 +392,9 @@ without asking: the `notdiamond` wrapper counts any `-p` or non-TTY launch as
 approving it. That would bill those runs to the API key instead of the
 forwarded subscription login Not Diamond is set up to use
 (`apiKeySource` is `none` with the login, `ANTHROPIC_API_KEY` with the key).
+The proxy godel starts (`godel-models-ensure-proxy`) gets the same environment; it
+doesn't read `ANTHROPIC_API_KEY` (the `notdiamond` CLI only reads it to work out which
+credential Claude Code will send), so that only matters for the pin variables.
 
 Launch steps:
 1. **Proxy guard (every launch).** A proxy started by a pinned launch would
@@ -583,7 +588,17 @@ badge's icon and a `⇡` for a PR (coloured like the board's `#N`).
   sidebar, and dedicated so magit and diffs don't replace it. (It's `display-buffer-overriding-action`,
   not a `display-buffer-alist` entry: Doom's popup module replaces that list after config.el
   loads.) Code that needs a window for magit, a diff or a file uses `godel-agent-content-window`:
-  the main window is internal when Claude and magit sit side by side.
+  the main window is internal when Claude and magit sit side by side. The sidebar's `d` asks
+  for it strictly (`godel-board--select-content-window` with STRICT): if magit's window was
+  closed, Claude's is split rather than replaced by the diff.
+  The session's window is an ordinary one, **not** protected from `delete-other-windows`
+  (config.el builds its own display alist, so claude-code-ide's `no-delete-other-windows`
+  isn't merged in): `SPC w o` closes it (`SPC c t` brings it back), and so does ediff when
+  claude-code-ide shows an edit as a diff. That is deliberate: claude-code-ide deletes the
+  side windows before ediff, ediff takes the frame, claude-code-ide shows Claude again
+  (here: split off the left at 60%, the diff in the rest), and quitting restores the layout.
+  Checked against the real `claude-code-ide--display-buffer-in-side-window` and ediff, started
+  from magit's window and from Claude's.
 
 ### New task (`n`)
 

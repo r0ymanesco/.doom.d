@@ -526,12 +526,16 @@ it.  Without Doom workspaces, the board opens in the selected window."
   (interactive)
   (if godel-board--compact (godel-sidebar-hide) (quit-window)))
 
-(defun godel-board--select-content-window ()
+(defun godel-board--select-content-window (&optional strict)
   "Select a live window in the main area, preferring one not showing Claude.
 From the sidebar the selected window is a side window, which can't be made
 the only window, and the main window is internal once Claude and magit sit
-side by side.  The window is undedicated, so what's shown next can replace it."
-  (let ((window (godel-agent-content-window)))
+side by side.  The window is undedicated, so what's shown next can replace it.
+If only Claude's windows are left (magit's was closed), the window is Claude's
+own, unless STRICT: then Claude's window is split and the new half is
+selected, so what's shown next doesn't replace the conversation."
+  (let ((window (or (godel-agent-content-window strict)
+                    (and strict (split-window (godel-agent-content-window) nil 'right)))))
     (set-window-dedicated-p window nil)
     (select-window window)))
 
@@ -597,7 +601,8 @@ workspace."
   (interactive)
   (require 'godel-review)
   (let ((task (godel-board--task)))
-    (when godel-board--compact (godel-board--select-content-window))
+    ;; Strict: the diff must not replace Claude's conversation.
+    (when godel-board--compact (godel-board--select-content-window t))
     (godel-review-diff task)))
 
 (defun godel-board-review ()
