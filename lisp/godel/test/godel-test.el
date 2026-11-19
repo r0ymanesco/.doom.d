@@ -173,6 +173,18 @@
       (call-process "env" nil t nil)
       (split-string (buffer-string) "\n" t))))
 
+(defun godel-test-leaks (lines &optional names)
+  "The LINES (NAME=VALUE) that give one of NAMES a value.
+NAMES defaults to `godel-pin-variables'.  Only these are checked, not every
+NOTDIAMOND_ variable: the tests run wherever you are, often inside a
+notdiamond session whose own variables (NOTDIAMOND_CLAUDE_SESSION_ID, ...)
+the wrapper resets on each launch anyway.  Returning just the offending lines
+also keeps a failure from printing the whole environment, keys and all."
+  (let ((names (or names godel-pin-variables)))
+    (seq-filter (lambda (line)
+                  (cl-some (lambda (name) (string-prefix-p (concat name "=") line)) names))
+                lines)))
+
 (ert-deftest godel-test-launch-env-child-process ()
   "A real child process: Not Diamond sees no pins even if Emacs has them."
   (let* ((inherited (append godel-test-inherited process-environment))
@@ -180,7 +192,7 @@
                   (plist-get (godel-models-launch-env godel-test-router "high" inherited) :env)))
          (pinned (godel-test-child-env
                   (plist-get (godel-models-launch-env godel-test-sonnet "low" inherited) :env))))
-    (should-not (cl-some (lambda (l) (string-prefix-p "NOTDIAMOND_" l)) router))
+    (should-not (godel-test-leaks router))
     (should (member "NOTDIAMOND_RESEARCH_MODEL_PIN=sonnet" pinned))
     (should (member "NOTDIAMOND_RESEARCH_EFFORT_PIN=low" pinned))
     (should (member "NOTDIAMOND_ROUTING=off" pinned))))
@@ -396,7 +408,7 @@
       (should (file-exists-p state))
       (with-temp-buffer
         (insert-file-contents env-log)
-        (should-not (string-match-p "NOTDIAMOND_" (buffer-string))))
+        (should-not (godel-test-leaks (split-string (buffer-string) "\n" t))))
       ;; Proxy already running: no second start.
       (delete-file env-log)
       (setq result 'pending)
@@ -1218,9 +1230,10 @@ instance-name prompt bug): it waits for the first and gets its buffer."
       (should (member "Edit,Write,MultiEdit,NotebookEdit,Bash" (plist-get ran :args)))
       (should-not (member "--settings" (plist-get ran :args)))
       (should (equal (cadr (member "--effort" (plist-get ran :args))) godel-default-effort))
-      ;; Pin variables and GODEL_SERVER only appear as bare names (= unset).
-      (should-not (cl-some (lambda (e) (string-match-p "\\`\\(NOTDIAMOND_\\|GODEL_SERVER=\\)[^=]*=" e))
-                           (plist-get ran :env)))
+      ;; Pin variables and GODEL_SERVER are unset for the child (bare names in
+      ;; front), even though Emacs has GODEL_SERVER set.
+      (should-not (godel-test-leaks (godel-test-child-env (plist-get ran :env))
+                                    (cons "GODEL_SERVER" godel-pin-variables)))
       (should (equal (car (plist-get ran :env)) "GODEL_SERVER"))
       (should (string-match-p "return 20" (plist-get ran :input)))
       (let ((task (godel-task-get id)))
