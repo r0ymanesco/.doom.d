@@ -582,10 +582,14 @@ badge's icon and a `⇡` for a PR (coloured like the board's `#N`).
 - Left side window, kept by `delete-other-windows`, in its own slot so it can
   share the left side with Treemacs. Claude is not a side window (side windows on
   one side stack vertically, so it would sit under the sidebar): `claude-code-ide-use-side-window`
-  is left on for extra instances (the walkthrough keeps its right side window), and config.el
-  advises claude-code-ide's display function so a project's main session is split off the left
-  edge of the main window area by `my/claude-code-display-left-of-main`, just right of the
-  sidebar, and dedicated so magit and diffs don't replace it. (It's `display-buffer-overriding-action`,
+  is left on for everything else (the walkthrough, and sessions in projects that aren't godel
+  tasks, keep its right side window), and config.el advises claude-code-ide's display function
+  so a **task's** main session (`*claude-code[REPO/SLUG]*`, the name `godel-agent-buffer-name`
+  gives it; other projects' names have no slash) is split off the left edge of the main window
+  area by `my/claude-code-display-left-of-main`, just right of the sidebar, and dedicated so
+  magit and diffs don't replace it. Showing it when it's already visible (`SPC c l`) returns
+  its window untouched (`my/claude-code-reuse-window`, not `display-buffer-reuse-window`, which
+  would apply claude-code-ide's side-window alist to it). (It's `display-buffer-overriding-action`,
   not a `display-buffer-alist` entry: Doom's popup module replaces that list after config.el
   loads.) Code that needs a window for magit, a diff or a file uses `godel-agent-content-window`:
   the main window is internal when Claude and magit sit side by side. The sidebar's `d` asks
@@ -596,9 +600,16 @@ badge's icon and a `⇡` for a PR (coloured like the board's `#N`).
   isn't merged in): `SPC w o` closes it (`SPC c t` brings it back), and so does ediff when
   claude-code-ide shows an edit as a diff. That is deliberate: claude-code-ide deletes the
   side windows before ediff, ediff takes the frame, claude-code-ide shows Claude again
-  (here: split off the left at 60%, the diff in the rest), and quitting restores the layout.
-  Checked against the real `claude-code-ide--display-buffer-in-side-window` and ediff, started
-  from magit's window and from Claude's.
+  (here: split off the left, with `my/claude-code-ediff-fraction`, 30%, instead of 60% while an
+  ediff control buffer is showing, so the diff keeps most of the frame), and quitting restores
+  the layout. Checked against the real `claude-code-ide--display-buffer-in-side-window` and
+  ediff, started from magit's window and from Claude's; the tests in `godel-test.el` load
+  config.el's block and do the same.
+  After `SPC w o` from Claude's window it is the frame's main window, which `delete-window`
+  refuses to delete, so claude-code-ide's hide (`SPC c t`) would fail:
+  `my/claude-code-hide-advice` shows another buffer in it instead.
+  `SPC c w` toggles a task session between 60% and 40% of the main area, and the side windows
+  (walkthrough, other projects) between 150 and 100 columns, as it always did for them.
 
 ### New task (`n`)
 

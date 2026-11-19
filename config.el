@@ -570,20 +570,21 @@ This must run BEFORE LSP starts so executable-find works correctly."
 
 
 ;; Claude code
-;; Layout: treemacs | godel sidebar | Claude | magit.
+;; Layout of a godel task's workspace: treemacs | godel sidebar | Claude | magit.
 ;; Side windows on the same side stack vertically, so Claude can't be a side
-;; window next to the sidebar.  A project's main Claude session is instead
-;; split off the left edge of the main window area, just right of the sidebar,
-;; and dedicated so other displays (magit, diffs) don't take it over.  Extra
-;; instances (the godel walkthrough, `:review') keep claude-code-ide's own
-;; right side window.
+;; window next to the sidebar.  A task's main Claude session (`*claude-code[REPO/SLUG]*')
+;; is instead split off the left edge of the main window area, just right of the
+;; sidebar, and dedicated so other displays (magit, diffs) don't take it over.
+;; Every other session keeps claude-code-ide's own right side window: sessions in
+;; projects that aren't godel tasks, and the extra instances (the godel walkthrough,
+;; `:review').
 ;;
 ;; The main session's window is an ordinary one, not protected from
 ;; `delete-other-windows': `SPC w o' closes it like any window (`SPC c t'
 ;; brings it back), and so does ediff, which claude-code-ide starts for Claude's
 ;; edits.  Before that, claude-code-ide deletes the side windows, and after
-;; ediff starts it shows Claude again, which lands here, so the diff gets the
-;; frame and Claude comes back beside it; quitting restores the saved layout.
+;; ediff starts it shows Claude again, which lands here (with a smaller share, so
+;; the diff gets most of the frame); quitting restores the saved layout.
 ;;
 ;; This hooks claude-code-ide's display function with
 ;; `display-buffer-overriding-action' rather than a `display-buffer-alist'
@@ -593,32 +594,60 @@ This must run BEFORE LSP starts so executable-find works correctly."
   "Share of the main window area (everything but the sidebar) Claude gets.")
 (defvar my/claude-code-fractions '(0.6 0.4)
   "Fractions `claude-code-ide-toggle-width' switches between.")
+(defvar my/claude-code-ediff-fraction 0.3
+  "Share Claude gets when it is shown while a diff is up (see above).")
+(defvar my/claude-code-side-widths '(150 100)
+  "Widths `claude-code-ide-toggle-width' switches Claude's side windows between.
+Paired with `my/claude-code-fractions': the first while Claude's share is the
+first fraction.")
 
 (defun my/claude-code-main-session-p (buffer)
-  "Non-nil if BUFFER is a project's main Claude session, not an extra instance."
-  (string-match-p "\\`\\*claude-code\\[[^:]*\\]\\*\\'" (buffer-name buffer)))
+  "Non-nil if BUFFER is the main Claude session of a godel task.
+godel names those `*claude-code[REPO/SLUG]*' (`godel-agent-buffer-name'); other
+projects' sessions have no slash, and extra instances have a `:instance'."
+  (string-match-p "\\`\\*claude-code\\[[^]:/]+/[^]:]+\\]\\*\\'" (buffer-name buffer)))
 
 (defun my/claude-code-main-session-window-p (window)
-  "Non-nil if WINDOW is a main-area window showing a main Claude session.
-Not the walkthrough's side window, which has its own fixed width."
+  "Non-nil if WINDOW is a main-area window showing a task's main Claude session."
   (and (window-live-p window)
        (not (window-parameter window 'window-side))
        (my/claude-code-main-session-p (window-buffer window))))
 
-(defun my/claude-code-fit-window (window)
-  "Resize Claude's WINDOW to `my/claude-code-main-fraction' of the main area.
+(defun my/claude-code-side-session-window-p (window)
+  "Non-nil if WINDOW is a Claude side window (not a task's main session)."
+  (and (window-live-p window)
+       (window-parameter window 'window-side)
+       (string-prefix-p "*claude-code[" (buffer-name (window-buffer window)))))
+
+(defun my/claude-code-ediff-up-p ()
+  "Non-nil if an ediff control buffer is showing in the selected frame."
+  (cl-some (lambda (w) (eq (buffer-local-value 'major-mode (window-buffer w)) 'ediff-mode))
+           (window-list)))
+
+(defun my/claude-code-fit-window (window &optional fraction)
+  "Resize Claude's WINDOW to FRACTION (default `my/claude-code-main-fraction')
+of the main area.
 Does nothing if WINDOW is the whole main area (magit's window is closed):
 there is nothing to share it with, and resizing it would eat into the sidebar."
   (unless (eq window (window-main-window))
-    (let ((delta (- (round (* my/claude-code-main-fraction
+    (let ((delta (- (round (* (or fraction my/claude-code-main-fraction)
                               (window-total-width (window-main-window))))
                     (window-total-width window))))
       (when (and (not (zerop delta)) (window-resizable-p window delta t))
         (window-resize window delta t)))))
 
+(defun my/claude-code-reuse-window (buffer _alist)
+  "Return BUFFER's window if it is showing, without touching it.
+Not `display-buffer-reuse-window': like every action function it gets the
+alist claude-code-ide builds for a side window, and applying that to a window
+that's already showing Claude would give it `no-delete-other-windows' and
+resize it to a fixed width (`SPC c l' shows a visible session again)."
+  (get-buffer-window buffer))
+
 (defun my/claude-code-display-left-of-main (buffer _alist)
   "Display BUFFER in a new window at the left edge of the main window area.
-Takes `my/claude-code-main-fraction' of the main window area.
+Takes `my/claude-code-main-fraction' of the main window area, or the smaller
+`my/claude-code-ediff-fraction' while a diff is up.
 The action alist is ignored on purpose: `display-buffer' merges in the one
 claude-code-ide builds for a side window, whose `window-parameters' include
 `no-delete-other-windows' (which would make this window survive ediff's
@@ -626,31 +655,56 @@ claude-code-ide builds for a side window, whose `window-parameters' include
 it to a fixed width."
   (when-let* ((window (display-buffer-in-direction
                        buffer '((direction . left) (window . main)))))
-    (my/claude-code-fit-window window)
+    (my/claude-code-fit-window window (if (my/claude-code-ediff-up-p)
+                                          my/claude-code-ediff-fraction
+                                        my/claude-code-main-fraction))
     window))
 
 (defun my/claude-code-display-advice (orig buffer)
-  "Show main Claude sessions left of the main window area (around ORIG)."
+  "Show a task's main Claude session left of the main window area (around ORIG)."
   (if (my/claude-code-main-session-p buffer)
       (let ((display-buffer-overriding-action
-             '((display-buffer-reuse-window my/claude-code-display-left-of-main))))
+             '((my/claude-code-reuse-window my/claude-code-display-left-of-main))))
         (funcall orig buffer))
     (funcall orig buffer)))
 (advice-add 'claude-code-ide--display-buffer-in-side-window
             :around #'my/claude-code-display-advice)
 
+(defun my/claude-code-hide-advice (orig session)
+  "Hide SESSION's window even when it is the frame's main window (around ORIG).
+`delete-window' refuses to delete the only window besides side windows, which
+Claude's is after `SPC w o'; show another buffer in it instead."
+  (let* ((buffer (claude-code-ide-mcp-session-buffer session))
+         (window (and buffer (get-buffer-window buffer))))
+    (if (and window (not (window-deletable-p window)))
+        (progn
+          (claude-code-ide--touch-session session)
+          (set-window-dedicated-p window nil)
+          (switch-to-prev-buffer window 'bury)
+          (when (eq (window-buffer window) buffer)
+            (set-window-buffer window (other-buffer buffer t))))
+      (funcall orig session))))
+(advice-add 'claude-code-ide--toggle-existing-window
+            :around #'my/claude-code-hide-advice)
+
 (defun claude-code-ide-toggle-width ()
-  "Toggle Claude's share of the main window area between 60% and 40%.
-Updates `my/claude-code-main-fraction' and resizes visible main Claude windows
-(not the walkthrough's side window)."
+  "Toggle Claude's width: 60% or 40% of the main window area.
+Updates `my/claude-code-main-fraction' and resizes visible task sessions.  Claude's
+side windows (the walkthrough, sessions outside godel tasks) switch between
+fixed widths instead (`my/claude-code-side-widths')."
   (interactive)
-  (setq my/claude-code-main-fraction
-        (if (= my/claude-code-main-fraction (car my/claude-code-fractions))
-            (cadr my/claude-code-fractions)
-          (car my/claude-code-fractions)))
+  (let ((first (= my/claude-code-main-fraction (car my/claude-code-fractions))))
+    (setq my/claude-code-main-fraction
+          (if first (cadr my/claude-code-fractions) (car my/claude-code-fractions))
+          claude-code-ide-window-width
+          (if first (cadr my/claude-code-side-widths) (car my/claude-code-side-widths))))
   (dolist (win (window-list))
-    (when (my/claude-code-main-session-window-p win)
-      (my/claude-code-fit-window win)))
+    (cond ((my/claude-code-main-session-window-p win)
+           (my/claude-code-fit-window win))
+          ((my/claude-code-side-session-window-p win)
+           (let ((delta (- claude-code-ide-window-width (window-body-width win))))
+             (when (window-resizable-p win delta t)
+               (window-resize win delta t))))))
   (message "Claude Code width: %d%%" (round (* 100 my/claude-code-main-fraction))))
 
 (use-package! claude-code-ide
@@ -677,9 +731,9 @@ Updates `my/claude-code-main-fraction' and resizes visible main Claude windows
                       (let ((ghostel-scroll-on-input nil))
                         (apply orig-fn args))
                     (apply orig-fn args)))))
-  ;; Right side window for extra instances (the godel walkthrough); main
-  ;; sessions are sized by `my/claude-code-main-fraction' instead.
-  (setq claude-code-ide-window-width 150)
+  ;; Width of the right side window (the walkthrough, sessions outside godel
+  ;; tasks); a task's main session is sized by `my/claude-code-main-fraction'.
+  (setq claude-code-ide-window-width (car my/claude-code-side-widths))
   (claude-code-ide-emacs-tools-setup)  ; Optionally enable Emacs MCP tools
   (advice-add 'claude-code-ide-insert-at-mentioned :after
               (lambda (&rest _) (claude-code-ide-switch-to-buffer))))
