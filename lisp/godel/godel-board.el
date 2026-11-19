@@ -527,7 +527,7 @@ it.  Without Doom workspaces, the board opens in the selected window."
   (if godel-board--compact (godel-sidebar-hide) (quit-window)))
 
 (defun godel-board-visit ()
-  "Open the task's workspace: magit-status on the left, Claude on the right."
+  "Open the task's workspace: magit-status in the main window, Claude beside it."
   (interactive)
   (let* ((task (godel-board--task))
          (buffer (godel-agent-buffer task)))
