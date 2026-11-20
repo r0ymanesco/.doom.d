@@ -124,7 +124,7 @@ About a day, no changes to godel, findings in a write-up like `SPIKE.md`:
    `d`, comments and the review list?
 3. **ghostel → ssh → tmux:** keys, colours, scrollback, and reconnecting
    after the laptop sleeps (plain ssh vs mosh).
-4. **`notdiamond-claude` on the host:** the proxy, the model pin and the
+4. **`notdiamond-claude` on the host:** the proxy, `--model` and the
    proxy guard, and its login.
 5. **Event latency:** a hook on the host to a board redraw on the laptop.
 

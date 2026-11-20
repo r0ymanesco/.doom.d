@@ -111,8 +111,8 @@ session and checks that the session really runs on the chosen model.
    below it, `:wq`. You stay where you are; the task appears on the board
    as setting up, then working.
 2. `SPC G a` shows the board. When the task turns **needs review** (and you
-   get a notification), `RET` opens it: the worktree's magit status on the
-   left, the Claude session on the right, the sidebar on the far left.
+   get a notification), `RET` opens it: the sidebar on the far left, then the
+   Claude session, then the worktree's magit status.
 3. `d` (on the board) or `SPC G v d` (in the task) shows the diff. `C` on a
    line or selection adds a comment.
 4. `SPC G v s` sends your comments to the agent as one message. It works
@@ -166,7 +166,7 @@ draft, **cyan** merged, **red** closed without merging.
 
 | Key | Action |
 |---|---|
-| `RET` | Open the task (its workspace: magit on the left, Claude on the right); resumes the session if it isn't running |
+| `RET` | Open the task (its workspace: sidebar, Claude, then magit, left to right); resumes the session if it isn't running |
 | `TAB` | Expand a task (id, branch, worktree, model, changes, PR, comments, review, last message, session), or collapse a repo |
 | `n` | New task, in the repo at point |
 | `m` | Send the agent a message (typed in the minibuffer) |
@@ -235,9 +235,10 @@ repo it asks whether to trust the folder; godel asks you in the minibuffer
 ("Trust <repo> for Claude?") and answers for you.
 
 **The model list** comes from Claude itself and refreshes when Claude Code
-or notdiamond update. `SPC G M` refreshes it by hand. If the mechanism that
-pins a model stops working, godel warns once and fixed models can't be
-picked; Not Diamond keeps working.
+or notdiamond update. `SPC G M` refreshes it by hand. A model other than
+Not Diamond is chosen with `--model`; each session is checked against the
+choice when it starts, so a wrapper that stopped honouring it shows up as
+"model mismatch" (see Troubleshooting).
 
 **Importing a worktree** (`i` on the board, `SPC G i`): turns an existing
 worktree of the repo into a task. godel lists the ones that aren't tasks
@@ -249,7 +250,12 @@ base branch and a title, and adds it without a session; `R` starts one.
 **Opening it.** `RET` on the board or sidebar, or switching to its
 workspace. If the session isn't running (after an Emacs restart, say), it's
 resumed with its conversation, on the task's model. It takes a couple of
-seconds. The Claude panel is on the right; `SPC c w` toggles its width.
+seconds. The Claude window sits between the sidebar and magit; `SPC c w` toggles its width
+(60% or 40% of the space right of the sidebar). It is an ordinary window, so `SPC w o`
+closes it like any other; `SPC c t` brings it back. While Claude's own edit is shown as a
+diff, Claude gets 30% of the frame (`my/claude-code-ediff-fraction`) so the diff has room. Claude sessions outside godel
+tasks, and the walkthrough, keep the usual right-hand window (`SPC c w` switches those
+between 150 and 100 columns).
 
 **Talking to the agent.** Type in its window as usual, or `m` on the board
 for a one-line message without opening the task.
@@ -537,8 +543,11 @@ repo (not from the board).
 **A task shows "model mismatch".** Its session started on a different model
 than the task's and was stopped before your prompt was sent. The row says
 what it started on. `R` restarts it (and lets you pick again). If it keeps
-happening with fixed models, `SPC G M` re-checks the model pin; a warning
-means the notdiamond wrapper changed and only Not Diamond works for now.
+happening with fixed models, the notdiamond wrapper may have changed how it
+handles `--model`, or Emacs's environment may set one of its pin variables
+(`NOTDIAMOND_RESEARCH_MODEL_PIN`, `NOTDIAMOND_RESEARCH_EFFORT_PIN`,
+`NOTDIAMOND_ROUTING`; godel removes them from its launches and warns at
+startup if Emacs has them). Not Diamond tasks are unaffected.
 
 **A task is "stopped" after restarting Emacs.** Expected: sessions run inside
 Emacs. Open the task (`RET`) to resume it.
@@ -579,7 +588,7 @@ the Claude session in `*claude-code[<repo>/<slug>]*`.
 | `SPC G n` | New task |
 | `SPC G o` | Toggle the sidebar |
 | `SPC G i` | Import an existing worktree as a task |
-| `SPC G M` | Refresh the model list (and re-check the model pin) |
+| `SPC G M` | Refresh the model list |
 | `SPC G c` | Comment on the line or selection (in a task's diff or files) |
 | `SPC G x` | Delete the comment on the line (in a task's diff or files) |
 | `SPC G v` | Review menu (in a task's diff or files) |

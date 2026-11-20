@@ -28,6 +28,8 @@
           (godel-event-functions nil)
           (godel-status-session-start-functions nil)
           (godel-models--cache nil)
+          ;; The tests' own sidebar buffer, so they never draw into or kill a live one.
+          (godel-sidebar-buffer-name (format "*godel-sidebar-%s*" (make-temp-name "")))
           ;; Never reach a real notdiamond proxy from the tests.
           (godel-proxy-address (cons "127.0.0.1" (godel-test-free-port))))
      (unwind-protect (progn ,@body)
@@ -115,7 +117,8 @@
 
 (defconst godel-test-inherited
   '("NOTDIAMOND_RESEARCH_MODEL_PIN=opus" "NOTDIAMOND_RESEARCH_EFFORT_PIN=max"
-    "NOTDIAMOND_ROUTING=off" "PATH=/usr/bin:/bin" "HOME=/tmp"))
+    "NOTDIAMOND_ROUTING=off" "ANTHROPIC_API_KEY=sk-test-not-a-real-key"
+    "PATH=/usr/bin:/bin" "HOME=/tmp"))
 
 (defun godel-test-env-value (env var)
   "Value of VAR in ENV as a child process would see it (first entry wins)."
@@ -131,24 +134,34 @@
 
 (ert-deftest godel-test-launch-env-router-strips-inherited-pins ()
   (let ((launch (godel-models-launch-env godel-test-router "high" godel-test-inherited)))
-    (dolist (var godel-pin-variables)
+    (dolist (var godel-scrubbed-variables)
       (should-not (godel-test-env-value (plist-get launch :env) var))
       (should-not (cl-some (lambda (e) (string-prefix-p (concat var "=") e))
                            (plist-get launch :env))))
+    ;; The router needs no --model: the wrapper starts it there.
     (should (equal (plist-get launch :args) '("--effort" "high")))
-    (should (null (plist-get launch :pinned)))
     (should (equal (plist-get launch :expect) "notdiamond[1m]"))
     (should (equal (godel-test-env-value (plist-get launch :env) "PATH") "/usr/bin:/bin"))))
 
-(ert-deftest godel-test-launch-env-pinned ()
+(ert-deftest godel-test-launch-env-names-the-model ()
+  "Any other model is chosen with --model; no pin variable is set or inherited."
   (let* ((launch (godel-models-launch-env godel-test-sonnet "high" godel-test-inherited))
          (env (plist-get launch :env)))
-    (should (equal (godel-test-env-value env "NOTDIAMOND_RESEARCH_MODEL_PIN") "sonnet"))
-    (should (equal (godel-test-env-value env "NOTDIAMOND_RESEARCH_EFFORT_PIN") "high"))
-    (should (equal (godel-test-env-value env "NOTDIAMOND_ROUTING") "off"))
-    (should (equal (plist-get launch :args) '("--effort" "high")))
-    (should (plist-get launch :pinned))
-    (should (equal (plist-get launch :expect) "claude-sonnet-5-5"))))
+    (should (equal (plist-get launch :args) '("--model" "sonnet" "--effort" "high")))
+    (should (equal (plist-get launch :expect) "claude-sonnet-5-5"))
+    ;; The wrapper drops --model when a pin is set, so none may get through:
+    ;; neither godel's own nor one Emacs inherited (godel-test-inherited has all).
+    (dolist (var godel-scrubbed-variables)
+      (should-not (godel-test-env-value env var))
+      (should-not (cl-some (lambda (e) (string-prefix-p (concat var "=") e)) env))))
+  ;; Without an effort there is no --effort, but still the model.
+  (should (equal (plist-get (godel-models-launch-env godel-test-sonnet nil godel-test-inherited)
+                            :args)
+                 '("--model" "sonnet")))
+  ;; A malformed effort fails here, before anything is started, for every model.
+  (dolist (entry (list godel-test-router godel-test-sonnet))
+    (should-error (godel-models-launch-env entry 5 godel-test-inherited)
+                  :type 'wrong-type-argument)))
 
 (ert-deftest godel-test-default-effort-is-medium ()
   (should (equal (eval (car (get 'godel-default-effort 'standard-value))) "medium")))
@@ -173,17 +186,28 @@
       (call-process "env" nil t nil)
       (split-string (buffer-string) "\n" t))))
 
+(defun godel-test-leaks (lines &optional names)
+  "The LINES (NAME=VALUE) that give one of NAMES a value.
+NAMES defaults to `godel-scrubbed-variables'.  Only these are checked, not every
+NOTDIAMOND_ variable: the tests run wherever you are, often inside a
+notdiamond session whose own variables (NOTDIAMOND_CLAUDE_SESSION_ID, ...)
+the wrapper resets on each launch anyway.  Returning just the offending lines
+also keeps a failure from printing the whole environment, keys and all."
+  (let ((names (or names godel-scrubbed-variables)))
+    (seq-filter (lambda (line)
+                  (cl-some (lambda (name) (string-prefix-p (concat name "=") line)) names))
+                lines)))
+
 (ert-deftest godel-test-launch-env-child-process ()
-  "A real child process: Not Diamond sees no pins even if Emacs has them."
-  (let* ((inherited (append godel-test-inherited process-environment))
-         (router (godel-test-child-env
-                  (plist-get (godel-models-launch-env godel-test-router "high" inherited) :env)))
-         (pinned (godel-test-child-env
-                  (plist-get (godel-models-launch-env godel-test-sonnet "low" inherited) :env))))
-    (should-not (cl-some (lambda (l) (string-prefix-p "NOTDIAMOND_" l)) router))
-    (should (member "NOTDIAMOND_RESEARCH_MODEL_PIN=sonnet" pinned))
-    (should (member "NOTDIAMOND_RESEARCH_EFFORT_PIN=low" pinned))
-    (should (member "NOTDIAMOND_ROUTING=off" pinned))))
+  "A real child process sees no pin and no API key, whatever the model.
+That holds even if Emacs has them: a pin would make the wrapper ignore --model,
+and a headless launch would use the key without asking and bypass the
+forwarded login."
+  (let ((inherited (append godel-test-inherited process-environment)))
+    (dolist (entry (list godel-test-router godel-test-sonnet))
+      (let ((child (godel-test-child-env
+                    (plist-get (godel-models-launch-env entry "high" inherited) :env))))
+        (should-not (godel-test-leaks child))))))
 
 (ert-deftest godel-test-parse-initialize ()
   (let* ((output (concat
@@ -225,6 +249,25 @@
     (let ((resume (split-string-shell-command (godel-agent-flags task '(:args nil) t))))
       (should (equal (cadr (member "--resume" resume)) "abc"))
       (should-not (member "--session-id" resume)))))
+
+(ert-deftest godel-test-agent-flags-resume-names-the-model ()
+  "A resumed session is always started with the task's --model, exactly once.
+The wrapper adds none to a Not Diamond resume, so godel passes it; without it
+`godel-agent-check-launch' has no --model to find, and a task switched from
+another model to Not Diamond would come back on the old one.  Any other model
+already has its --model in the launch args, which must not be doubled."
+  (cl-flet ((models (task entry resume)
+              (let ((flags (split-string-shell-command
+                            (godel-agent-flags task (godel-models-launch-env entry "low") resume))))
+                (cl-loop for (a b) on flags when (equal a "--model") collect b))))
+    (let ((router-task '(:session-id "abc" :model "notdiamond[1m]"))
+          (sonnet-task '(:session-id "abc" :model "sonnet")))
+      ;; Not Diamond: explicit on a resume, the wrapper's job when fresh.
+      (should (equal (models router-task godel-test-router t) '("notdiamond[1m]")))
+      (should (null (models router-task godel-test-router nil)))
+      ;; Anything else: once, fresh or resumed.
+      (should (equal (models sonnet-task godel-test-sonnet nil) '("sonnet")))
+      (should (equal (models sonnet-task godel-test-sonnet t) '("sonnet"))))))
 
 (ert-deftest godel-test-buffer-name ()
   (godel-test-with-env
@@ -354,16 +397,26 @@
 (ert-deftest godel-test-check-launch ()
   (let ((wrapper '(("node" "notdiamond" "claude") . ("PATH=/bin")))
         (claude-router '(("claude" "--settings" "{}" "--model" "notdiamond[1m]") . ("PATH=/bin")))
-        (claude-sonnet '(("claude" "--model" "sonnet" "--effort" "low") . ("NOTDIAMOND_ROUTING=off"))))
+        (claude-sonnet '(("claude" "--model" "sonnet" "--effort" "low") . ("PATH=/bin"))))
     (should (car (godel-agent-check-launch (list wrapper claude-router) godel-test-router)))
-    ;; A pin anywhere in the tree fails a Not Diamond session.
-    (should-not (car (godel-agent-check-launch
-                      (list (cons (car wrapper) '("NOTDIAMOND_RESEARCH_MODEL_PIN=opus")) claude-router)
-                      godel-test-router)))
-    (should-not (car (godel-agent-check-launch (list wrapper claude-sonnet) godel-test-router)))
     (should (car (godel-agent-check-launch (list wrapper claude-sonnet) godel-test-sonnet)))
+    ;; The wrong model either way round.
+    (should-not (car (godel-agent-check-launch (list wrapper claude-sonnet) godel-test-router)))
     (should-not (car (godel-agent-check-launch (list wrapper claude-router) godel-test-sonnet)))
-    (should-not (car (godel-agent-check-launch (list wrapper) godel-test-router)))))
+    ;; No --model at all.
+    (should-not (car (godel-agent-check-launch (list wrapper) godel-test-router)))
+    (should-not (car (godel-agent-check-launch (list wrapper) godel-test-sonnet)))
+    ;; A pin anywhere in the tree fails any session, even one whose --model is
+    ;; right: with a pin the wrapper would have dropped godel's --model.
+    (dolist (pin '("NOTDIAMOND_RESEARCH_MODEL_PIN=opus" "NOTDIAMOND_RESEARCH_EFFORT_PIN=max"
+                   "NOTDIAMOND_ROUTING=off"))
+      (let ((pinned (cons (car wrapper) (list pin))))
+        (should-not (car (godel-agent-check-launch (list pinned claude-router) godel-test-router)))
+        (should-not (car (godel-agent-check-launch (list pinned claude-sonnet) godel-test-sonnet)))))
+    (should (string-match-p "pin variable" (cdr (godel-agent-check-launch
+                                                  (list (cons (car wrapper) '("NOTDIAMOND_ROUTING=off"))
+                                                        claude-sonnet)
+                                                  godel-test-sonnet))))))
 
 (ert-deftest godel-test-same-model ()
   (should (godel-status-same-model-p "claude-sonnet-5-5[1m]" "claude-sonnet-5-5"))
@@ -371,7 +424,7 @@
   (should-not (godel-status-same-model-p "claude-opus-5-5" "notdiamond[1m]")))
 
 (ert-deftest godel-test-proxy-guard-starts-clean-proxy ()
-  "No proxy running: godel starts one, and the pin variables don't reach it."
+  "No proxy running: godel starts one, and the pin variables and API key don't reach it."
   (godel-test-with-env
     (let* ((state (expand-file-name "proxy-started" tmp))
            (env-log (expand-file-name "start-env" tmp))
@@ -380,7 +433,8 @@
            ;; Nothing listening, so the direct check fails and the CLI is used.
            (godel-proxy-address (cons "127.0.0.1" (godel-test-free-port)))
            (process-environment (append '("NOTDIAMOND_ROUTING=off"
-                                          "NOTDIAMOND_RESEARCH_MODEL_PIN=opus")
+                                          "NOTDIAMOND_RESEARCH_MODEL_PIN=opus"
+                                          "ANTHROPIC_API_KEY=sk-test-not-a-real-key")
                                         process-environment))
            (result 'pending))
       (with-temp-file fake
@@ -396,7 +450,7 @@
       (should (file-exists-p state))
       (with-temp-buffer
         (insert-file-contents env-log)
-        (should-not (string-match-p "NOTDIAMOND_" (buffer-string))))
+        (should-not (godel-test-leaks (split-string (buffer-string) "\n" t))))
       ;; Proxy already running: no second start.
       (delete-file env-log)
       (setq result 'pending)
@@ -404,74 +458,6 @@
       (should (godel-test-wait (lambda () (not (eq result 'pending)))))
       (should (eq result t))
       (should-not (file-exists-p env-log)))))
-
-(ert-deftest godel-test-pin-check-result ()
-  (should (eq (car (godel-models--check-result '("--settings" "{}" "--model" "haiku")
-                                               '("--model" "notdiamond[1m]") "haiku"))
-              'ok))
-  (should (eq (car (godel-models--check-result '("--model" "notdiamond[1m]")
-                                               '("--model" "notdiamond[1m]") "haiku"))
-              'broken))
-  (should (eq (car (godel-models--check-result '("--model" "haiku") '("--settings" "{}") "haiku"))
-              'broken))
-  (should (eq (car (godel-models--check-result nil '("--model" "notdiamond[1m]") "haiku"))
-              'unknown)))
-
-(defun godel-test-fake-wrapper (dir honour-pin)
-  "Write fake notdiamond and notdiamond-claude programs into DIR.
-The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
---model set like the real one (or ignoring the pin unless HONOUR-PIN)."
-  (let ((nd (expand-file-name "notdiamond" dir))
-        (wrapper (expand-file-name "notdiamond-claude" dir)))
-    (with-temp-file nd
-      (insert "#!/bin/sh\n[ \"$1\" = status ] && echo '{\"ok\":true}'\nexit 0\n"))
-    (with-temp-file wrapper
-      (insert "#!/bin/sh\n"
-              "bin=$(python3 -I -c 'import json,os,sys;print(json.load(open(os.environ[\"NOTDIAMOND_CONFIG\"]))[\"claudeBinaryPath\"])')\n"
-              "model='notdiamond[1m]'\n"
-              (if honour-pin "[ -n \"$NOTDIAMOND_RESEARCH_MODEL_PIN\" ] && model=$NOTDIAMOND_RESEARCH_MODEL_PIN\n" "")
-              "exec \"$bin\" --settings '{}' --model \"$model\"\n"))
-    (set-file-modes nd #o755)
-    (set-file-modes wrapper #o755)
-    (cons nd wrapper)))
-
-(defmacro godel-test-with-fake-wrapper (honour-pin &rest body)
-  (declare (indent 1))
-  `(godel-test-with-env
-     (let* ((fakes (godel-test-fake-wrapper tmp ,honour-pin))
-            (godel-notdiamond-program (car fakes))
-            (godel-claude-program (cdr fakes))
-            (godel-claude-binary "/bin/true")
-            (source (expand-file-name "nd-config.json" tmp))
-            (process-environment (cons (concat "NOTDIAMOND_CONFIG=" source) process-environment))
-            (godel-models-pin-status nil)
-            (result nil))
-       (with-temp-file source (insert "{\"server\":{\"port\":8082},\"credential\":{\"apiKey\":null}}"))
-       ,@body)))
-
-(ert-deftest godel-test-pin-check-ok ()
-  (godel-test-with-fake-wrapper t
-    (godel-models-check-pin (lambda (status) (setq result status)))
-    (should (godel-test-wait (lambda () result) 20))
-    (should (eq (car result) 'ok))
-    (should-not (godel-models-pin-broken-p))))
-
-(ert-deftest godel-test-pin-check-broken ()
-  (godel-test-with-fake-wrapper nil
-    (cl-letf (((symbol-function 'display-warning) #'ignore))
-      (godel-models-check-pin (lambda (status) (setq result status)))
-      (should (godel-test-wait (lambda () result) 20)))
-    (should (eq (car result) 'broken))
-    (should (godel-models-pin-broken-p))
-    ;; Pinned models are unavailable in the picker; Not Diamond isn't.
-    (should (godel-new--unavailable-p godel-test-sonnet))
-    (should-not (godel-new--unavailable-p godel-test-router))
-    (should (string-match-p "unavailable" (godel-new--model-label godel-test-sonnet)))
-    ;; And a pinned task isn't launched.
-    (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
-           (task (godel-task-create :title "p" :repo repo :base "main" :model "sonnet")))
-      (should-error (godel-agent-start task) :type 'user-error)
-      (should (eq (plist-get (godel-task-get (plist-get task :id)) :state) 'stopped)))))
 
 (ert-deftest godel-test-proxy-check-direct ()
   "The proxy is asked directly; the CLI only runs if that fails."
@@ -886,14 +872,45 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (dolist (var godel-pin-variables)
           (should-not (godel-test-env-value env var)))
         (should (equal (plist-get (godel-task-get id) :expect-model) "notdiamond[1m]"))
-        (should-not (plist-get (godel-task-get id) :pinned))
+        ;; Fresh: the wrapper starts Not Diamond on the router itself.
+        (should-not (member "--model" flags))
         ;; The task's own effort.
         (godel-task-update id :effort "max")
         (godel-agent--launch (godel-task-get id) t)
         (should (equal (cadr (member "--effort" flags)) "max"))
         (should (member "--resume" flags))
+        ;; Resumed: the wrapper adds nothing, so godel names the router.
+        (should (equal (cadr (member "--model" flags)) "notdiamond[1m]"))
         (dolist (var godel-pin-variables)
           (should-not (godel-test-env-value env var)))))))
+
+(ert-deftest godel-test-launch-fixed-model-passes-model ()
+  "Any other model starts with --model and --effort, and no pin variable.
+Not even one Emacs inherited: the wrapper would drop --model for it."
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'idle))
+           (id (plist-get task :id))
+           (process-environment (append godel-test-inherited process-environment))
+           flags env)
+      (require 'claude-code-ide)
+      (godel-task-update id :model "sonnet" :effort "low")
+      (cl-letf (((symbol-function 'godel-agent--server-socket) (lambda () "/tmp/godel-test.sock"))
+                ((symbol-function 'godel-agent--watch-trust) #'ignore)
+                ((symbol-function 'claude-code-ide)
+                 (lambda ()
+                   (setq flags (split-string-shell-command claude-code-ide-cli-extra-flags)
+                         env process-environment))))
+        (dolist (resume '(nil t))
+          (godel-agent--launch (godel-task-get id) resume)
+          ;; Once, whether fresh or resumed.
+          (should (equal (cl-loop for (a b) on flags when (equal a "--model") collect b)
+                         '("sonnet")))
+          (should (equal (cadr (member "--effort" flags)) "low"))
+          (should (eq (and (member "--resume" flags) t) resume))
+          (should (equal (plist-get (godel-task-get id) :expect-model) "claude-sonnet-5-5"))
+          (dolist (var godel-scrubbed-variables)
+            (should-not (godel-test-env-value env var))
+            (should-not (cl-some (lambda (e) (string-prefix-p (concat var "=") e)) env))))))))
 
 (ert-deftest godel-test-no-launch-when-session-live ()
   "Even if a start gets through, it never launches over a live session."
@@ -1191,7 +1208,9 @@ instance-name prompt bug): it waits for the first and gets its buffer."
   (godel-test-with-env
     (let* ((task (godel-test-review-task tmp))
            (id (plist-get task :id))
-           (process-environment (cons "GODEL_SERVER=/should/not/leak" process-environment))
+           (process-environment (append '("GODEL_SERVER=/should/not/leak"
+                                          "ANTHROPIC_API_KEY=sk-test-not-a-real-key")
+                                        process-environment))
            ran activity-seen badge-seen notified)
       (cl-letf (((symbol-function 'godel-models-ensure-proxy) (lambda (cb) (funcall cb t)))
                 ((symbol-function 'godel-notify) (lambda (title body) (push (list title body) notified)))
@@ -1207,7 +1226,7 @@ instance-name prompt bug): it waits for the first and gets its buffer."
                    (setq badge-seen (godel-board--review-badge (godel-task-get id)))
                    (funcall on-exit 0 godel-test-reviewer-output))))
         (godel-reviewer-run (godel-task-get id)))
-      ;; Streamed, read-only, headless, no session saved, no pins for Not
+      ;; Streamed, read-only, headless, no session saved, no --model for Not
       ;; Diamond (only --effort), no godel hooks.
       (should (member "stream-json" (plist-get ran :args)))
       (should (member "--no-session-persistence" (plist-get ran :args)))
@@ -1218,9 +1237,10 @@ instance-name prompt bug): it waits for the first and gets its buffer."
       (should (member "Edit,Write,MultiEdit,NotebookEdit,Bash" (plist-get ran :args)))
       (should-not (member "--settings" (plist-get ran :args)))
       (should (equal (cadr (member "--effort" (plist-get ran :args))) godel-default-effort))
-      ;; Pin variables and GODEL_SERVER only appear as bare names (= unset).
-      (should-not (cl-some (lambda (e) (string-match-p "\\`\\(NOTDIAMOND_\\|GODEL_SERVER=\\)[^=]*=" e))
-                           (plist-get ran :env)))
+      ;; Pin variables and GODEL_SERVER are unset for the child (bare names in
+      ;; front), even though Emacs has GODEL_SERVER set.
+      (should-not (godel-test-leaks (godel-test-child-env (plist-get ran :env))
+                                    (cons "GODEL_SERVER" godel-scrubbed-variables)))
       (should (equal (car (plist-get ran :env)) "GODEL_SERVER"))
       (should (string-match-p "return 20" (plist-get ran :input)))
       (let ((task (godel-task-get id)))
@@ -1325,7 +1345,8 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (should (member "-p" args))
         (should (member "--no-session-persistence" args))
         (should (member "Edit,Write,MultiEdit,NotebookEdit,Bash" args))
-        ;; The author's own model and effort: pinned Sonnet at low.
+        ;; The author's own model and effort: Sonnet at low.
+        (should (equal (cadr (member "--model" args)) "sonnet"))
         (should (equal (cadr (member "--effort" args)) "low"))
         (should-not (member "--settings" args)))
       (should (equal (plist-get ran :dir) (plist-get task :worktree)))
@@ -1333,8 +1354,10 @@ instance-name prompt bug): it waits for the first and gets its buffer."
       (should (string-match-p "## Tested" (plist-get ran :input)))
       ;; Never reports as the task.
       (should (equal (car (plist-get ran :env)) "GODEL_SERVER"))
-      (should (equal (godel-test-env-value (plist-get ran :env) "NOTDIAMOND_RESEARCH_MODEL_PIN")
-                     "sonnet"))
+      ;; The model goes by --model; no pin variable (it would make the wrapper
+      ;; drop that flag).
+      (should-not (godel-test-leaks (godel-test-child-env (plist-get ran :env))
+                                    godel-pin-variables))
       (should (equal result (list godel-test-briefing nil)))
       (should-not (gethash id godel-reviewer--briefing-runs)))))
 
@@ -1587,7 +1610,7 @@ only the wrapper orphans `claude', which keeps running and spending tokens
   "A failure setting up the briefing, before any process starts, fails the review
 too, instead of leaving it marked as running and refusing every later `v r'."
   (godel-test-with-env
-    (let* (;; A malformed stored effort on a pinned author: the briefing's own
+    (let* (;; A malformed stored effort on the author: the briefing's own
            ;; launch setup signals before it starts anything.
            (task (godel-test-briefed-task tmp :model "sonnet" :effort 5))
            (id (plist-get task :id))
@@ -2825,6 +2848,502 @@ walkthrough's window stays selected."
               (should-error (godel-reviewer-tool-show-location "app.py" 1 nil))))
         (when (overlayp godel-reviewer--focus-overlay) (delete-overlay godel-reviewer--focus-overlay))
         (kill-buffer review)
+        (when-let* ((b (get-file-buffer (expand-file-name "app.py" wt)))) (kill-buffer b))))))
+
+(defun godel-test-unique (format-string)
+  "FORMAT-STRING with its %s replaced by a token that is new on every call.
+The window tests give their buffers names no live session has, so one run from
+a running Emacs can't collide with, or kill, your own buffers, and one test's
+leftovers can't change another's result."
+  (format format-string (make-temp-name "")))
+
+(defmacro godel-test-killing-new-buffers (&rest body)
+  "Run BODY, then kill the buffers it created, and only those."
+  (declare (indent 0))
+  (let ((existing (make-symbol "existing")))
+    `(let ((,existing (buffer-list)))
+       (unwind-protect (progn ,@body)
+         (dolist (b (buffer-list))
+           (unless (or (memq b ,existing)
+                       (string-match-p "\\` \\*\\(Minibuf\\|Echo Area\\)" (buffer-name b)))
+             (kill-buffer b)))))))
+
+(ert-deftest godel-test-content-window-skips-claude-and-side-windows ()
+  "With Claude and magit side by side the main window is internal; the
+content window is the one that isn't Claude, never a side window."
+  (godel-test-killing-new-buffers
+    (save-window-excursion
+      (delete-other-windows)
+      (let* ((claude (get-buffer-create (godel-test-unique "*claude-code[repo%s/slug]*")))
+             (magit (get-buffer-create (godel-test-unique "*magit: %s*")))
+             (side (display-buffer-in-side-window
+                    (get-buffer-create (godel-test-unique "*godel-sidebar-%s*"))
+                    '((side . left) (slot . 1)))))
+        (switch-to-buffer magit)
+        (let ((claude-window (split-window (window-main-window) nil 'left)))
+          (set-window-buffer claude-window claude)
+          (select-window claude-window)
+          (should-not (window-live-p (window-main-window)))
+          ;; Even with Claude selected, magit's window is chosen.
+          (should (eq (window-buffer (godel-agent-content-window)) magit))
+          (select-window side)
+          (should (eq (window-buffer (godel-agent-content-window t)) magit))
+          ;; Only Claude left: strict gives nil, otherwise Claude's window.
+          (set-window-buffer (get-buffer-window magit) claude)
+          (should-not (godel-agent-content-window t))
+          (should (eq (window-buffer (godel-agent-content-window)) claude)))))))
+
+;;;; Claude's window layout (config.el), against the real claude-code-ide
+
+(defconst godel-test-claude-advice
+  '((claude-code-ide--display-buffer-in-side-window . my/claude-code-display-advice)
+    (claude-code-ide--toggle-existing-window . my/claude-code-hide-advice))
+  "The advice config.el's layout block installs: (FUNCTION . ADVICE).")
+
+(defun godel-test-load-claude-layout ()
+  "Evaluate config.el's Claude layout block.
+A missing config.el or block is a test failure, not a skip: otherwise renaming
+the marker comment would silently switch off every layout test."
+  (let* ((file (expand-file-name "../../../config.el"
+                                 (file-name-directory (or load-file-name buffer-file-name
+                                                          (locate-library "godel-test")))))
+         (text (progn (should (file-readable-p file))
+                      (with-temp-buffer (insert-file-contents file) (buffer-string))))
+         (a (string-match ";; Claude code\n;; Layout" text))
+         (b (string-match "(use-package! claude-code-ide" text)))
+    (should (and a b (< a b)))
+    (with-temp-buffer
+      (insert (substring text a b))
+      (goto-char (point-min))
+      (condition-case nil
+          (while t (eval (read (current-buffer)) t))
+        (end-of-file nil)))
+    (should (fboundp 'my/claude-code-display-advice))))
+
+(defmacro godel-test-with-claude-config (&rest body)
+  "Run BODY with config.el's Claude layout block evaluated.
+The advice it installs is removed afterwards unless it was already there: run
+from a live Emacs, this leaves your own setup alone."
+  (declare (indent 0))
+  `(progn
+     (should (require 'claude-code-ide nil t))
+     (let ((had-advice (cl-every (lambda (pair) (advice-member-p (cdr pair) (car pair)))
+                                 godel-test-claude-advice)))
+       (unwind-protect
+           (progn (godel-test-load-claude-layout) ,@body)
+         (unless had-advice
+           (dolist (pair godel-test-claude-advice)
+             (when (fboundp (car pair)) (advice-remove (car pair) (cdr pair)))))))))
+
+(defmacro godel-test-with-claude-layout (&rest body)
+  "Run BODY in a 160-column frame, for a real task, with a sidebar and a magit
+window set up and config.el's Claude layout active.  Binds:
+  `task'            the task (a real worktree under `tmp')
+  `claude'          its session buffer, named by `godel-agent-buffer-name'
+  `review'          an extra instance of it (`:review')
+  `other'           a session outside any godel task
+  `sidebar'         the sidebar's window (12 columns, protected) and
+  `sidebar-buffer'  its buffer
+  `magit'           the magit window and `magit-buffer' its buffer.
+Every buffer's name is one no live session has.  Only the buffers created here
+and by BODY are killed afterwards, and the advice is removed only if this test
+installed it, so run from a live Emacs it leaves your sessions and layout alone."
+  (declare (indent 0))
+  `(godel-test-with-env
+     (godel-test-killing-new-buffers
+       (godel-test-with-claude-config
+         (let* ((width (frame-width))
+                (claude-code-ide-use-side-window t)
+                (claude-code-ide-window-side 'right)
+                (claude-code-ide-window-width 30)
+                (claude-code-ide-focus-on-open nil)
+                (task (godel-test-review-task tmp))
+                (worktree (plist-get task :worktree))
+                (claude (get-buffer-create (godel-agent-buffer-name worktree)))
+                (review (get-buffer-create (godel-agent-buffer-name worktree "review")))
+                (other (get-buffer-create
+                        (godel-agent-buffer-name (expand-file-name (make-temp-name "plain") tmp))))
+                (sidebar-buffer (get-buffer-create (godel-test-unique "*godel-sidebar-%s*")))
+                (magit-buffer (get-buffer-create (godel-test-unique "*magit: %s*")))
+                sidebar magit)
+           (unwind-protect
+               (save-window-excursion
+                 (let ((my/claude-code-main-fraction 0.6)
+                       (my/claude-code-side-widths '(30 20)))
+                   (set-frame-width nil 160)
+                   (delete-other-windows)
+                   (setq sidebar (display-buffer-in-side-window
+                                  sidebar-buffer '((side . left) (slot . 1) (window-width . 12))))
+                   (set-window-parameter sidebar 'no-delete-other-windows t)
+                   (switch-to-buffer magit-buffer)
+                   (setq magit (selected-window))
+                   ,@body))
+             (set-frame-width nil width)))))))
+
+(defun godel-test-frame-columns ()
+  "Columns the windows span.  (`frame-width' doesn't follow `set-frame-width'
+in a batch Emacs.)"
+  (window-total-width (frame-root-window)))
+
+(defun godel-test-layout-names ()
+  "Buffer names of the live windows, left to right."
+  (mapcar (lambda (w) (buffer-name (window-buffer w)))
+          (sort (window-list nil 'no-minibuf)
+                (lambda (a b) (< (window-left-column a) (window-left-column b))))))
+
+(defun godel-test-near-p (actual expected)
+  (<= (abs (- actual expected)) 1))
+
+(ert-deftest godel-test-claude-layout-recognises-godel-buffer-names ()
+  "The layout is for the buffers godel really names `*claude-code[REPO/SLUG]*',
+checked on what `godel-agent-buffer-name' produces for a task, its `:review'
+instance, and a directory that is no task: if the naming changes, this fails
+instead of the layout quietly falling back to the right side window."
+  (godel-test-with-claude-layout
+    (should (my/claude-code-main-session-p claude))
+    (should-not (my/claude-code-main-session-p review))
+    (should-not (my/claude-code-main-session-p other))
+    ;; The real display function puts exactly the first of them in the main area.
+    (dolist (buffer (list review other))
+      (claude-code-ide--display-buffer-in-side-window buffer)
+      (should (eq (window-parameter (get-buffer-window buffer) 'window-side) 'right))
+      (delete-window (get-buffer-window buffer)))
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (should-not (window-parameter (get-buffer-window claude) 'window-side))))
+
+(ert-deftest godel-test-claude-layout-beside-sidebar ()
+  "The session opens between the sidebar and magit, takes 60% of the main
+area, is an ordinary window (`SPC w o' closes it, leaving magit and the sidebar)."
+  (godel-test-with-claude-layout
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (should (equal (godel-test-layout-names)
+                   (mapcar #'buffer-name (list sidebar-buffer claude magit-buffer))))
+    (let ((window (get-buffer-window claude)))
+      (should-not (window-parameter window 'window-side))
+      (should-not (window-parameter window 'no-delete-other-windows))
+      (should (window-dedicated-p window))
+      (should (godel-test-near-p (window-total-width window)
+                                 (round (* 0.6 (- (godel-test-frame-columns) 12))))))
+    ;; `delete-other-windows' closes Claude's window, but not the sidebar's,
+    ;; which godel protects.
+    (select-window magit)
+    (delete-other-windows)
+    (should (equal (godel-test-layout-names)
+                   (mapcar #'buffer-name (list sidebar-buffer magit-buffer))))))
+
+(ert-deftest godel-test-claude-layout-only-for-task-sessions ()
+  "A session outside a godel task, and an extra instance, keep claude-code-ide's
+right side window."
+  (godel-test-with-claude-layout
+    ;; (One at a time: without sessions they share a side-window slot.)
+    (dolist (buffer (list other review))
+      (claude-code-ide--display-buffer-in-side-window buffer)
+      (should (eq (window-parameter (get-buffer-window buffer) 'window-side) 'right))
+      (should (equal (car (last (godel-test-layout-names))) (buffer-name buffer)))
+      (should-not (get-buffer-window claude)))))
+
+(ert-deftest godel-test-claude-shown-again-keeps-its-window ()
+  "Showing a session that's already visible (`SPC c l') leaves its window as it
+was: still 60%, still closable by `delete-other-windows'."
+  (godel-test-with-claude-layout
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (let* ((window (get-buffer-window claude))
+           (width (window-total-width window)))
+      (claude-code-ide--display-buffer-in-side-window claude)
+      (should (eq (get-buffer-window claude) window))
+      (should (= (window-total-width window) width))
+      (should-not (window-parameter window 'no-delete-other-windows))
+      (select-window window)
+      (delete-other-windows)
+      (should (equal (godel-test-layout-names)
+                     (mapcar #'buffer-name (list sidebar-buffer claude)))))))
+
+(ert-deftest godel-test-claude-hide-when-it-is-the-main-window ()
+  "After `SPC w o' from Claude's window it is the frame's main window, which
+`delete-window' refuses to delete: `SPC c t' must hide it anyway, and show it again."
+  (godel-test-with-claude-layout
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (select-window (get-buffer-window claude))
+    (delete-other-windows)
+    (should-not (window-deletable-p (get-buffer-window claude)))
+    (let ((session (make-claude-code-ide-mcp-session :buffer claude)))
+      (claude-code-ide--toggle-existing-window session)
+      (should-not (get-buffer-window claude))
+      (should (= (length (cl-remove (buffer-name sidebar-buffer) (godel-test-layout-names)
+                                    :test #'equal))
+                 1))
+      (claude-code-ide--toggle-existing-window session)
+      (should (get-buffer-window claude))
+      (should (= (length (window-list nil 'no-minibuf)) 3)))))
+
+(ert-deftest godel-test-claude-width-toggle ()
+  "The toggle resizes the task session to 40% / 60% of the main area and the
+side window to its fixed widths, and leaves a session that is the whole main
+area alone."
+  (godel-test-with-claude-layout
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (claude-code-ide--display-buffer-in-side-window review)
+    (let ((review-window (get-buffer-window review))
+          (main-area (- (godel-test-frame-columns) 12
+                        (window-total-width (get-buffer-window review))))
+          (inhibit-message t))
+      (should (window-parameter review-window 'window-side))
+      (should (= (window-body-width review-window) 30))
+      (claude-code-ide-toggle-width)
+      (should (= my/claude-code-main-fraction 0.4))
+      (should (= (window-body-width review-window) 20))
+      (should (godel-test-near-p (window-total-width (get-buffer-window claude))
+                                 (round (* 0.4 (- (godel-test-frame-columns) 12
+                                                  (window-total-width review-window))))))
+      (claude-code-ide-toggle-width)
+      (should (= (window-body-width review-window) 30))
+      (should (godel-test-near-p (window-total-width (get-buffer-window claude))
+                                 (round (* 0.6 main-area))))
+      ;; Magit's window closed: Claude is the main window, so it fills what the
+      ;; side windows leave (it isn't resized to a fraction of that).
+      (delete-window magit)
+      (should (eq (get-buffer-window claude) (window-main-window)))
+      (claude-code-ide-toggle-width)
+      (should (= (window-total-width (get-buffer-window claude))
+                 (- (godel-test-frame-columns) 12 (window-total-width review-window))))
+      (claude-code-ide-toggle-width)
+      (should (= (window-total-width (get-buffer-window claude))
+                 (- (godel-test-frame-columns) 12 (window-total-width review-window)))))))
+
+(ert-deftest godel-test-claude-width-toggle-message ()
+  "The message says what was resized: a share for task sessions, columns for
+side windows, and both when both are showing or when neither is (the setting
+changes either way)."
+  (godel-test-with-claude-layout
+    (let (messages)
+      (cl-flet ((toggle ()
+                  (cl-letf (((symbol-function 'message)
+                             (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+                    (claude-code-ide-toggle-width))
+                  (car messages)))
+        ;; Only the task session showing (sides are 30 -> 20 columns, 60% -> 40%).
+        (claude-code-ide--display-buffer-in-side-window claude)
+        (should (equal (toggle) "Claude Code width: 40%"))
+        (should (equal (toggle) "Claude Code width: 60%"))
+        ;; Only a side window showing.
+        (delete-window (get-buffer-window claude))
+        (claude-code-ide--display-buffer-in-side-window review)
+        (should (equal (toggle) "Claude Code width: 20 columns"))
+        ;; Both.
+        (claude-code-ide--display-buffer-in-side-window claude)
+        (should (equal (toggle) "Claude Code width: 60% / 30 columns"))
+        ;; Neither.
+        (delete-window (get-buffer-window claude))
+        (delete-window (get-buffer-window review))
+        (should (equal (toggle) "Claude Code width: 40% / 20 columns"))))))
+
+(ert-deftest godel-test-claude-ide-diff-from-either-window ()
+  "claude-code-ide's diff (openDiff: delete the side windows, ediff, show Claude
+again, restore the layout on quit) gives the same result whether it starts in
+magit's window or in Claude's: ediff gets the frame, Claude comes back to its
+left with a small share, and quitting restores the original layout."
+  (dolist (start '(magit claude))
+    (godel-test-with-claude-layout
+      (claude-code-ide--display-buffer-in-side-window claude)
+      (let* ((a (get-buffer-create (godel-test-unique "diff-A-%s")))
+             (b (get-buffer-create (godel-test-unique "diff-B-%s")))
+             (before (godel-test-layout-names))
+             (columns (godel-test-frame-columns))
+             (saved nil)
+             (inhibit-message t))
+        (with-current-buffer a (insert "one\ntwo\nthree\n"))
+        (with-current-buffer b (insert "one\n2\nthree\n"))
+        (select-window (if (eq start 'claude) (get-buffer-window claude) magit))
+        (setq saved (current-window-configuration))
+        (let ((ediff-window-setup-function 'ediff-setup-windows-plain)
+              (ediff-split-window-function 'split-window-horizontally))
+          (dolist (w (window-list))
+            (when (window-parameter w 'window-side) (delete-window w)))
+          (ediff-buffers a b))
+        ;; ediff has the whole frame.
+        (should (my/claude-code-ediff-up-p))
+        (should (>= (+ (window-total-width (get-buffer-window a))
+                       (window-total-width (get-buffer-window b)))
+                    (- columns 2)))
+        ;; claude-code-ide shows Claude again once ediff is up.
+        (claude-code-ide--display-buffer-in-side-window claude)
+        (let ((claude-window (get-buffer-window claude))
+              (window-a (get-buffer-window a))
+              (window-b (get-buffer-window b)))
+          (should (equal (car (godel-test-layout-names)) (buffer-name claude)))
+          (should-not (window-parameter claude-window 'window-side))
+          (should-not (window-parameter claude-window 'no-delete-other-windows))
+          (should (< (window-left-column claude-window) (window-left-column window-a)))
+          (should (< (window-left-column claude-window) (window-left-column window-b)))
+          ;; The diff keeps most of the frame: Claude has the small share, each
+          ;; diff window more than Claude, and together they have more than 60%.
+          (should (godel-test-near-p (window-total-width claude-window)
+                                     (round (* my/claude-code-ediff-fraction columns))))
+          (should (> (window-total-width window-a) (window-total-width claude-window)))
+          (should (> (window-total-width window-b) (window-total-width claude-window)))
+          (should (>= (+ (window-total-width window-a) (window-total-width window-b))
+                      (round (* 0.6 columns)))))
+        (set-window-configuration saved)
+        (should (equal (godel-test-layout-names) before))))))
+
+;;;; The sidebar's commands in that layout (RET and d)
+
+(defmacro godel-test-with-board-in-sidebar (&rest body)
+  "In `godel-test-with-claude-layout': show the sidebar's board in the sidebar
+window, select it with point on the task, as when RET or d is pressed there.
+Binds `board'.  (`godel-test-with-env' gives each test its own sidebar buffer
+name, so a live sidebar is never touched.)"
+  (declare (indent 0))
+  `(let* ((board (godel-board-buffer t)))
+     (set-window-buffer sidebar board)
+     (set-window-dedicated-p sidebar t)
+     (select-window sidebar)
+     (goto-char (point-min))
+     (while (and (not (eobp))
+                 (not (equal (godel-board--task-id-at-point) (plist-get task :id))))
+       (forward-line 1))
+     (should (equal (godel-board--task-id-at-point) (plist-get task :id)))
+     ,@body))
+
+(defun godel-test-visit (magit-buffer)
+  "Press RET on the task at point, with magit stood in for by MAGIT-BUFFER.
+`magit-status-setup-buffer' shows the status buffer in the selected window, so
+that is what the stand-in does; the sidebar's own refresh is left out."
+  (cl-letf (((symbol-function 'magit-status-setup-buffer)
+             (lambda (_directory) (switch-to-buffer magit-buffer)))
+            ((symbol-function 'godel-sidebar-sync) #'ignore))
+    (godel-board-visit)))
+
+(ert-deftest godel-test-board-visit-keeps-the-layout ()
+  "RET in the sidebar of a workspace that is already sidebar | Claude | magit
+leaves it that way, with Claude selected and at its 60%."
+  (godel-test-with-claude-layout
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (godel-test-with-board-in-sidebar
+      (let ((expected (mapcar #'buffer-name (list board claude magit-buffer))))
+        (should (equal (godel-test-layout-names) expected))
+        (godel-test-visit magit-buffer)
+        (should (equal (godel-test-layout-names) expected))
+        (should (eq (selected-window) (get-buffer-window claude)))
+        (should (godel-test-near-p (window-total-width (get-buffer-window claude))
+                                   (round (* 0.6 (- (godel-test-frame-columns) 12)))))))))
+
+(ert-deftest godel-test-board-visit-in-a-fresh-workspace ()
+  "RET where the main area shows something else and there is no Claude window
+yet: magit takes the main window and Claude opens between it and the sidebar."
+  (godel-test-with-claude-layout
+    (let ((scratch (get-buffer-create (godel-test-unique "*scratch-%s*"))))
+      (switch-to-buffer scratch)
+      (godel-test-with-board-in-sidebar
+        (should-not (get-buffer-window claude))
+        (should (equal (godel-test-layout-names)
+                       (mapcar #'buffer-name (list board scratch))))
+        (godel-test-visit magit-buffer)
+        (should (equal (godel-test-layout-names)
+                       (mapcar #'buffer-name (list board claude magit-buffer))))
+        (should-not (get-buffer-window scratch))
+        (should (eq (selected-window) (get-buffer-window claude)))
+        (should (godel-test-near-p (window-total-width (get-buffer-window claude))
+                                   (round (* 0.6 (- (godel-test-frame-columns) 12)))))))))
+
+(ert-deftest godel-test-board-visit-with-magit-closed ()
+  "RET when magit's window was closed and Claude fills the main area: magit
+takes that window for a moment, and Claude is split back in beside it."
+  (godel-test-with-claude-layout
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (delete-window magit)
+    (godel-test-with-board-in-sidebar
+      (should (equal (godel-test-layout-names) (mapcar #'buffer-name (list board claude))))
+      (godel-test-visit magit-buffer)
+      (should (equal (godel-test-layout-names)
+                     (mapcar #'buffer-name (list board claude magit-buffer))))
+      (should (eq (selected-window) (get-buffer-window claude))))))
+
+(ert-deftest godel-test-board-diff-never-takes-claudes-window ()
+  "d in the sidebar shows the diff beside Claude, not in place of it: in
+magit's window when there is one, otherwise in a split of Claude's own."
+  (dolist (magit-open '(t nil))
+    (godel-test-with-claude-layout
+      (claude-code-ide--display-buffer-in-side-window claude)
+      (unless magit-open (delete-window magit))
+      (godel-test-with-board-in-sidebar
+        (let ((diff (get-buffer-create (godel-test-unique "*diff-%s*")))
+              (windows (length (window-list nil 'no-minibuf))))
+          (cl-letf (((symbol-function 'godel-review-diff)
+                     (lambda (_task) (switch-to-buffer diff))))
+            (godel-board-diff))
+          (should (equal (godel-test-layout-names)
+                         (mapcar #'buffer-name (list board claude diff))))
+          (should (eq (window-buffer (get-buffer-window claude)) claude))
+          (should (eq (selected-window) (get-buffer-window diff)))
+          ;; With magit open the diff took its window; without, it's one more.
+          (should (= (length (window-list nil 'no-minibuf))
+                     (if magit-open windows (1+ windows)))))))))
+
+(ert-deftest godel-test-board-select-content-window ()
+  "The diff from the sidebar must never take Claude's window: with magit's
+window gone, Claude's is split and the new half is used.  Visit (non-strict)
+may take Claude's, since it splits it back in afterwards."
+  (godel-test-killing-new-buffers
+    (save-window-excursion
+      (delete-other-windows)
+      (let* ((claude (get-buffer-create (godel-test-unique "*claude-code[repo%s/slug]*")))
+             (magit (get-buffer-create (godel-test-unique "*magit: %s*")))
+             (side (display-buffer-in-side-window
+                    (get-buffer-create (godel-test-unique "*godel-sidebar-%s*"))
+                    '((side . left) (slot . 1)))))
+        (switch-to-buffer claude)
+        (let ((claude-window (get-buffer-window claude)))
+          (set-window-dedicated-p claude-window t)
+          (select-window side)
+          ;; Non-strict: Claude's own window, undedicated.
+          (godel-board--select-content-window)
+          (should (eq (selected-window) claude-window))
+          (should-not (window-dedicated-p claude-window))
+          ;; Strict: a new window, not Claude's.
+          (select-window side)
+          (godel-board--select-content-window t)
+          (should-not (eq (selected-window) claude-window))
+          (should (eq (window-buffer claude-window) claude))
+          (should-not (window-dedicated-p (selected-window)))
+          (should-not (window-parameter (selected-window) 'window-side))
+          ;; With a non-Claude window around, strict just uses it.
+          (switch-to-buffer magit)
+          (select-window side)
+          (let ((before (length (window-list))))
+            (godel-board--select-content-window t)
+            (should (eq (window-buffer (selected-window)) magit))
+            (should (= (length (window-list)) before))))))))
+
+(ert-deftest godel-test-walkthrough-show-location-beside-claude ()
+  "The file opens in the window that isn't Claude, and Claude's window keeps
+the conversation."
+  (godel-test-with-env
+    (let* ((task (godel-test-review-task tmp))
+           (wt (plist-get task :worktree))
+           (review (get-buffer-create (godel-agent-buffer-name wt "review")))
+           (author (get-buffer-create (godel-agent-buffer-name wt)))
+           (magit (get-buffer-create (godel-test-unique "*magit: %s*")))
+           (ctx (list :project-dir wt :buffer review)))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer magit)
+            (let ((author-window (split-window (window-main-window) nil 'left))
+                  (side (display-buffer-in-side-window review '((side . right)))))
+              (set-window-buffer author-window author)
+              (select-window side)
+              (cl-letf (((symbol-function 'claude-code-ide-mcp-server-get-session-context)
+                         (lambda (&rest _) ctx)))
+                (godel-reviewer-tool-show-location "app.py" 4 5))
+              (sleep-for 0.05)
+              (should (eq (window-buffer author-window) author))
+              (should (eq (selected-window) side))
+              (should (equal (buffer-file-name
+                              (window-buffer (godel-agent-content-window t)))
+                             (expand-file-name "app.py" wt)))))
+        (when (overlayp godel-reviewer--focus-overlay) (delete-overlay godel-reviewer--focus-overlay))
+        (dolist (b (list review author magit)) (when (buffer-live-p b) (kill-buffer b)))
         (when-let* ((b (get-file-buffer (expand-file-name "app.py" wt)))) (kill-buffer b))))))
 
 (ert-deftest godel-test-review-history ()

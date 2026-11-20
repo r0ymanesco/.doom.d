@@ -671,16 +671,15 @@ Claude's tool call."
 
 (defun godel-reviewer--show (path start end session)
   "Show PATH at lines START..END, highlighted, beside SESSION's window.
-Uses the main window of the frame showing SESSION (not SESSION's own
-window) and leaves the user's cursor where it is."
+Uses a content window of the frame showing SESSION (see
+`godel-agent-content-window'; never a Claude window) and leaves the user's cursor where it is."
   (let* ((buffer (find-file-noselect path))
          (session-window (and (buffer-live-p session) (get-buffer-window session t)))
          (frame (if session-window (window-frame session-window) (selected-frame)))
          (window (with-selected-frame frame
-                   (let ((main (window-main-window)))
-                     (if (and (window-live-p main) (not (eq main session-window)))
-                         main
-                       (display-buffer buffer '(nil (inhibit-same-window . t))))))))
+                   (or (let ((content (godel-agent-content-window t)))
+                         (and content (not (eq content session-window)) content))
+                       (display-buffer buffer '(nil (inhibit-same-window . t)))))))
     (set-window-buffer window buffer)
     (with-current-buffer buffer
       (let ((beg (save-excursion (goto-char (point-min)) (forward-line (1- start)) (point)))

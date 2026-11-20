@@ -20,7 +20,7 @@ Keys at a glance:
 | Anywhere | `SPC G n` | New task |
 | Anywhere | `SPC G o` | Toggle the sidebar |
 | Anywhere | `SPC G i` | Import an existing worktree as a task |
-| Anywhere | `SPC G M` | Refresh the model list (and re-check the model pin) |
+| Anywhere | `SPC G M` | Refresh the model list |
 | Task diff or file | `SPC G c` | Comment on the line or region |
 | Task diff or file | `SPC G x` | Delete the comment on the line (asks first) |
 | Task diff or file | `SPC G v` | Review menu for that task |
@@ -53,8 +53,8 @@ hooks, the board, and the review loop.
 | Session layer | Build on `claude-code-ide`; if it blocks us, switch to plain ghostel + `claude` |
 | CLI | `notdiamond-claude`. Do not use the `claude` on PATH, which is Paradev's wrapper |
 | Claude binary | `claudeBinaryPath` in `~/.notdiamond/config.json` points at `~/.local/bin/claude`, so sessions don't go through Paradev's wrapper (set 2026-11-11) |
-| Model choice | Chosen per task from the list Claude reports through the SDK `initialize` request. Applied at launch with the wrapper's model pin (env vars), never with `/model X` or `/effort X`, which save the user's default. The pin is checked when the wrapper updates (`godel-models-check-pin`); there is no TUI fallback |
-| Effort | Chosen per task for every model, Not Diamond included; default `medium`. Pinned models get it as the effort pin and `--effort`, Not Diamond as `--effort` only, ready for effort tuning in the router. For now the router still picks effort itself on every turn: a review launched with `--effort medium` was routed to Opus at xhigh (2026-11-18). Changed 2026-11-17; before that, effort was greyed out for Not Diamond and never passed |
+| Model choice | Chosen per task from the list Claude reports through the SDK `initialize` request. Applied at launch with `--model` (Not Diamond needs none), never with `/model X` or `/effort X`, which save the user's default. Every launch is checked against the choice (`SessionStart`'s model, or the processes on a resume); there is no TUI fallback |
+| Effort | Chosen per task for every model, Not Diamond included; default `medium`. Every model gets it as `--effort`; for Not Diamond that's ready for effort tuning in the router. For now the router still picks effort itself on every turn: a review launched with `--effort medium` was routed to Opus at xhigh (2026-11-18). Changed 2026-11-17; before that, effort was greyed out for Not Diamond and never passed |
 | Reviewer context | An independent reviewer (`v r`, `v w`) first asks the task's author for a briefing: the problem, the solution and the decisions behind it (including what you decided in the conversation), and what was tested. It's a read-only headless fork of the author's session, as in ship drafting, so the live session is untouched. The reviewer gets it as the author's account to check against the code, not to trust (2026-11-18). Skipped for a task whose session never started, or with `godel-reviewer-ask-author` nil |
 | Paradev | Fully separate: do not read `.paradev/` config or import Paradev worktrees |
 | Name / prefix | `godel` / `godel-`, code in `lisp/godel/` |
@@ -92,7 +92,7 @@ lisp/godel/
   godel-worktree.el  ; worktree/branch lifecycle, setup/teardown scripts
   godel-agent.el     ; backend protocol + claude-code-ide backend
   godel-tui.el       ; reading the Claude TUI: input ready, trust dialog
-  godel-models.el    ; model/effort list via the SDK initialize request, cache, pin, proxy guard
+  godel-models.el    ; model/effort list via the SDK initialize request, cache, launch environment, proxy guard
   godel-status.el    ; hook event receiver -> state machine -> godel-event-functions
   godel-board.el     ; godel-board-mode (magit-section): full board and sidebar views
   godel-sidebar.el   ; the sidebar window: SPC G o, auto-open in task workspaces
@@ -103,7 +103,6 @@ lisp/godel/
   godel-ship.el      ; author-drafted commit message and PR, push, merged state
   godel-api.el       ; godel-api-* entry points for external frontends
   bin/godel-hook     ; called by Claude Code hooks; forwards to emacsclient
-  bin/godel-probe    ; stand-in Claude binary for the pin check
   test/              ; ERT tests (test/run-tests.sh)
 ```
 
@@ -137,7 +136,7 @@ lisp/godel/
  :session-id "<uuid>"            ; chosen by godel (--session-id), updated on resume
  :transcript "/path.jsonl"       ; from SessionStart; "has started" for resume
  :pending-prompt nil             ; sent once the session is ready
- :expect-model "notdiamond[1m]" :pinned nil :model-actual "notdiamond[1m]"
+ :expect-model "notdiamond[1m]" :model-actual "notdiamond[1m]"
  :model-check-pending nil :resume-state nil
  ;; state shown on the board
  :state needs-review :last-event "..." :last-tool "Bash(npm test)"
@@ -205,8 +204,7 @@ keep their state.
 
 **Opening a task resumes its session.** If a task's session isn't running
 (after an Emacs restart, say), opening the task resumes it with
-`--resume <session-id>` on the task's model (pinned, or Not Diamond without
-pins), and shows it on the right once the launch has returned. This happens
+`--resume <session-id>` on the task's model (`--model`), and shows it between the sidebar and magit once the launch has returned. This happens
 on `RET` (board or sidebar) and on any switch to the task's workspace. The
 task keeps its state: a needs-review task stays needs-review (`:resume-state`,
 restored at `SessionStart`); stopped tasks come back idle. Not resumed
@@ -237,11 +235,15 @@ launch call:
 ```
 
 - `launch-env` comes from `godel-models-launch-env` (see Model and effort);
-  the model is chosen by the pin variables in it, never with `--model`.
+  it never has a pin variable, and the model is chosen with `--model` in the
+  flags (none for Not Diamond when fresh).
 - `--resume <session-id>` replaces `--session-id` when restarting a session
   that has started before (it has a transcript).
 - `save-window-excursion` keeps the user's layout: claude-code-ide always
-  shows a new session in a side window.
+  shows a new session in a window.  `claude-code-ide-use-side-window` is on (its
+  default), so extra instances such as the walkthrough get its right side
+  window; a task's own session is split off beside the sidebar instead (see
+  Sidebar).
 - Sessions are named `*claude-code[REPO/SLUG]*`
   (`claude-code-ide-buffer-name-function`, set by `godel-mode`), so
   same-named worktrees in different repos don't collide. claude-code-ide
@@ -281,7 +283,7 @@ stdin:  {"type":"control_request","request_id":"godel-1","request":{"subtype":"i
 
 The `control_response` has `models`: the same entries as the TUI's `/model`
 menu, including the wrapper's Not Diamond entry. Each has `value` (what to
-pin), `displayName`, `description`, `supportedEffortLevels` and
+pass as `--model`), `displayName`, `description`, `supportedEffortLevels` and
 `resolvedModel`. On 2026-11-12:
 
 | `value` | Name | Description | `resolvedModel` |
@@ -337,114 +339,113 @@ has `"high"`, shown on the board as `Not Diamond/high` and passed as
 `R` (the router ignores it for now). There's no automatic migration: a stored
 `"high"` on a Not Diamond task can't be told apart from one chosen since.
 
-**Applying the choice: the model pin.** The wrapper starts a session on a
-fixed model when these are set in the session's environment:
+**Applying the choice: `--model`.** Every model but Not Diamond is chosen with
+`--model <value>` (e.g. `sonnet`, `claude-fable-5-1[1m]`). The wrapper passes it
+to Claude ("Using the --model you passed instead of Not Diamond"), and the
+proxy sends any request whose model isn't Not Diamond through as named
+(`passthrough`), without the router. Nothing is saved to the user's settings.
+Tested on 2026-11-20 with notdiamond 0.2.17-rc.8 and Haiku/low: `SessionStart`
+reported `claude-haiku-5-5`, `apiKeySource` was `none`, and the proxy log showed
+`claude-haiku-5-5  low  passthrough`, identical to a launch made the old way
+(with the pin variables). That is the wrapper's documented flag: its README says
+to "pass `--model` to start on another model instead". godel used the wrapper's
+internal "research pin" variables until then, when `--model` wasn't an option;
+`SPIKE.md` §8 describes them.
 
-```
-NOTDIAMOND_RESEARCH_MODEL_PIN=<value>      e.g. sonnet, claude-fable-5-1[1m]
-NOTDIAMOND_RESEARCH_EFFORT_PIN=<effort>
-NOTDIAMOND_ROUTING=off
-```
-
-It then passes `--model <value>` to Claude, and requests go to that model as
-`passthrough` without the router. Tested on 2026-11-12 with `sonnet`/high and
-`claude-fable-5-1[1m]`/medium: the banner, `SessionStart`, and the transcript
-all showed the pinned model. Nothing is saved to the user's settings.
-
-**Not Diamond tasks set no pin**, so none of these variables reach them.
-`NOTDIAMOND_ROUTING=off` only changes what the wrapper does for that one
-launch; routing itself happens in the shared proxy, which only looks at its
-own environment. Tested on 2026-11-12: with a pinned Sonnet session still
-running, a Not Diamond session's requests were routed (the router picked Opus
-at xhigh for the turn and Haiku at low for a side request), while the pinned
-session's requests stayed `passthrough`. The one way to break this is a proxy
-started *by* a pinned launch, which the proxy guard below prevents.
+**No launch may carry the pin variables.** `NOTDIAMOND_RESEARCH_MODEL_PIN`,
+`NOTDIAMOND_RESEARCH_EFFORT_PIN` and `NOTDIAMOND_ROUTING` still exist in the
+wrapper, godel just doesn't use them, and with one set the wrapper *drops* a
+`--model` it's given ("Ignoring --model: this session runs X"). Emacs may have
+inherited them from the shell that started it, so removing them is active, not
+just "not adding them": godel puts the bare names (`"NOTDIAMOND_ROUTING"`, no
+`=`) at the front of the let-bound `process-environment`, which unsets them for
+the child process. If `godel-mode` finds any of them in Emacs's own environment
+at startup, it warns once.
 
 **Two launch paths.** Every launch goes through one function,
-`godel-models-launch-env`, which builds the environment for that launch from
-the chosen entry:
+`godel-models-launch-env`, which builds the environment and flags for that
+launch from the chosen entry:
 
-| Chosen model | Pin variables | `--effort` | `SessionStart` model must be |
+| Chosen model | `--model` | `--effort` | `SessionStart` model must be |
 |---|---|---|---|
-| **Not Diamond** (`value` `notdiamond[1m]`) | **all three removed** | the task's effort (no effort pin; for now the router picks effort itself) | `notdiamond[1m]` |
-| Any other entry | all three set | same value as the effort pin | the entry's `resolvedModel` |
+| **Not Diamond** (`value` `notdiamond[1m]`) | none when fresh (the wrapper starts it on the router); `notdiamond[1m]` when resuming (`godel-agent-flags`, see below) | the task's effort (for now the router picks effort itself) | `notdiamond[1m]` |
+| Any other entry | the entry's `value`, fresh or resumed | the task's effort | the entry's `resolvedModel` |
 
-The Not Diamond entry is recognised by its `resolvedModel` starting with
-`notdiamond`, not by its position in the list.
+Both get the environment without the pin variables, and the effort must be a
+string (a malformed stored one fails in `godel-models-launch-env`, before
+anything starts). The Not Diamond entry is recognised by its `resolvedModel`
+starting with `notdiamond`, not by its position in the list. godel doesn't pass
+`--model` for it on a fresh launch because the wrapper prints "Using the --model
+you passed instead of Not Diamond" for any `--model`, even the router's.
 
-**Not Diamond launches never carry the pin variables.** Removing them is
-active, not just "not adding them": Emacs may have inherited
-`NOTDIAMOND_RESEARCH_MODEL_PIN`, `NOTDIAMOND_RESEARCH_EFFORT_PIN` or
-`NOTDIAMOND_ROUTING` from the shell that started it. For a Not Diamond launch,
-godel puts the bare names (`"NOTDIAMOND_ROUTING"`, no `=`) at the front of the
-let-bound `process-environment`, which unsets them for the child process. If
-`godel-mode` finds any of them in Emacs's own environment at startup, it warns
-once.
+**Every Claude launch also drops `ANTHROPIC_API_KEY`** (`godel-scrubbed-variables`
+is the pin variables plus it). Emacs often has it from the shell. Interactive
+Claude Code only uses an env key you've approved, but a headless `-p` launch (the
+reviewer, the author's briefing, PR drafting, the model-list refresh) uses it
+without asking: the `notdiamond` wrapper counts any `-p` or non-TTY launch as
+approving it. That would bill those runs to the API key instead of the
+forwarded subscription login Not Diamond is set up to use
+(`apiKeySource` is `none` with the login, `ANTHROPIC_API_KEY` with the key).
+The proxy godel starts (`godel-models-ensure-proxy`) gets the same environment; it
+doesn't read `ANTHROPIC_API_KEY` (the `notdiamond` CLI only reads it to work out which
+credential Claude Code will send), so that only matters for the pin variables.
 
 Launch steps:
-1. **Proxy guard (every launch).** A proxy started by a pinned launch would
-   inherit `NOTDIAMOND_ROUTING=off` and turn routing off for **every** session
-   until it restarts. So before every launch, godel checks the proxy: first
-   by asking it directly for `/stats` over HTTP (address from the notdiamond
-   config, `godel-proxy-address` to override; ~0.02s), and only if that
-   fails with `notdiamond status --json` (~1.2s, mostly Node start-up). If
-   no proxy is running, godel starts one itself
-   with `notdiamond start` in an environment with the three pin variables
-   removed, and waits for `status` to report `ok`. Running it before every
-   launch (not just pinned ones) means the proxy is always one godel started
-   cleanly or one that was already running.
+1. **Proxy guard (every launch).** A proxy started with `NOTDIAMOND_ROUTING=off`
+   in its environment (Emacs inherited it from the shell, say) would turn
+   routing off for **every** session until it restarts. So before every
+   launch, godel checks the proxy: first by asking it directly for `/stats`
+   over HTTP (address from the notdiamond config, `godel-proxy-address` to
+   override; ~0.02s), and only if that fails with `notdiamond status --json`
+   (~1.2s, mostly Node start-up). If no proxy is running, godel starts one
+   itself with `notdiamond start` in an environment with the pin variables
+   removed, and waits for `status` to report `ok`. The proxy is therefore
+   always one godel started cleanly or one that was already running.
 2. Launch with the environment from `godel-models-launch-env` (bound in
    `process-environment` for this launch only, never set in Emacs's own
-   environment), `--session-id`, the hooks, `--effort`, and **no prompt**.
+   environment), `--session-id`, the hooks, `--model` and `--effort` as in the
+   table, and **no prompt**.
 3. If the trust dialog appears (repo never trusted), ask in the minibuffer
    "Trust <repo> for Claude?" and answer the dialog. Its default is
    "No, exit", so godel never just presses Enter. Worktrees of a trusted repo
    are trusted automatically.
 4. Wait for `SessionStart` and check its `model` against the table above
    (ignoring `[1m]`-style suffixes). On a mismatch godel stops the session
-   (before any prompt is sent) and marks the task **model mismatch**. For a
-   Not Diamond task a mismatch means a pin leaked into the launch.
+   (before any prompt is sent) and marks the task **model mismatch**. That is
+   what a wrapper that stopped honouring `--model` would look like.
    **Resumed sessions don't report a model** in `SessionStart`. For those,
    godel checks the running processes in `/proc` instead
-   (`godel-agent-check-launch`): Not Diamond sessions must have no pin
-   variable in any process's environment and Claude must have been given
-   `--model notdiamond…`; pinned sessions must have `--model <value>`. (The
-   transcript can't be used: a routed turn records the model the router
-   picked.) ghostel's native terminal gives Emacs a pipe without a PID, so
-   the process tree starts from `ghostel--pid`.
+   (`godel-agent-check-launch`): no process may have a pin variable in its
+   environment (the wrapper would have dropped godel's `--model`), and Claude
+   must have been given `--model <value>` (for Not Diamond, any
+   `--model notdiamond…`). (The transcript can't be used: a routed turn records
+   the model the router picked.) The wrapper adds `--model` to a fresh Not
+   Diamond launch but not to one that resumes, where it leaves the model to the
+   session, so godel passes `--model <Not Diamond value>` itself when it
+   resumes a Not Diamond task (`godel-agent-flags`; checked on real resumed
+   sessions, `SPIKE.md` §9). Otherwise there would be
+   nothing to check, and a task switched from another model to Not Diamond
+   would come back on the old one. ghostel's native terminal gives Emacs a
+   pipe without a PID, so the process tree starts from `ghostel--pid`.
 5. Wait for the input box on screen, then send the prompt
    (`claude-code-ide-send-prompt`; multi-line prompts arrive whole).
 
-`R` (restart/resume) relaunches with `--resume <session-id>` and the
-environment for the newly chosen model, so changing the model or effort
-mid-task needs no interaction with the TUI. Switching a task from a pinned
-model to Not Diamond relaunches without the pin variables, as above.
+`R` (restart/resume) relaunches with `--resume <session-id>` and the flags for
+the newly chosen model, so changing the model or effort mid-task needs no
+interaction with the TUI.
 
-**Pin check (`godel-models-check-pin`).** The pin is an internal wrapper
-feature, so godel tests it whenever the model list refreshes (when Claude
-Code or notdiamond change version, or with `SPC G M`):
-1. Proxy guard first, so the pinned run below can't start the proxy.
-2. Write a temporary copy of the notdiamond config with `claudeBinaryPath`
-   pointing at `bin/godel-probe`, a stand-in that records the arguments the
-   wrapper passes to Claude and exits (it answers `--version` with the real
-   binary). The real config is never edited.
-3. Run the wrapper twice with that copy: pinned to a model, and for Not
-   Diamond. The pinned run must get `--model <pin>`; the Not Diamond run must
-   get `--model notdiamond…` (the resume check relies on that too).
-
-About 4s, no Claude session, no model call. The result (`ok`, `broken`, or
-`unknown` if it couldn't run) is saved with the model cache. When it's
-`broken`: one warning, pinned models show as unavailable in the picker and
-can't be chosen, and pinned launches are refused (also through `R` and the
-API). Not Diamond keeps working.
-
-**No picker fallback.** Driving the TUI's `/model` menu when the pin breaks
-was considered and dropped (2026-11-12): it only helps in the case the pin
-check already reports, it's screen-reading code that would rarely run, and
-one wrong key there changes the user's default model. If the pin breaks, the
-fix belongs in the wrapper (keep the pin, or add a supported flag). godel
-never uses `/model X` or `/effort X`: both save the user's default for all
-new sessions.
+**No up-front check of the wrapper.** godel used to probe the wrapper
+whenever the model list refreshed (a stand-in Claude binary recording what the
+wrapper passed it), because the pin was an internal feature that could change
+in an update; if it broke, fixed models were unavailable. `--model` is the
+wrapper's documented flag, so that went (2026-11-20). Each launch is checked
+instead (step 4), which also catches the one thing a probe couldn't: a pin
+variable leaking into a real session. If a wrapper update ever stops honouring
+`--model`, the first launch on a fixed model stops as a model mismatch.
+Driving the TUI's `/model` menu as a fallback was considered and dropped
+(2026-11-12): it's screen-reading code that would rarely run, and one wrong key
+there changes the user's default model. godel never uses `/model X` or
+`/effort X`: both save the user's default for all new sessions.
 
 **Defaults and overrides.**
 - Defaults: `godel-default-model` (Not Diamond), `godel-default-effort`
@@ -494,7 +495,7 @@ Keys (the same in the sidebar):
 
 | Key | Action |
 |---|---|
-| `RET` | Open the task's workspace (created if needed): magit-status of the worktree in the main window, Claude on the right. If the session isn't running, it's resumed (see Status from hooks). |
+| `RET` | Open the task's workspace (created if needed): magit-status of the worktree in the main window, Claude split off its left (between the sidebar and magit). If the session isn't running, it's resumed (see Status from hooks). |
 | `TAB` | Expand a task (id, branch, worktree, model, changes, comments, review, last message, session) or collapse a repo |
 | `n` | New task, in the repo at point (task or repo heading) |
 | `m` | Message the agent from the minibuffer |
@@ -565,7 +566,36 @@ badge's icon and a `⇡` for a PR (coloured like the board's `#N`).
 - `RET` switches to the task's workspace and the sidebar comes along; `n`
   starts a task without leaving the current one.
 - Left side window, kept by `delete-other-windows`, in its own slot so it can
-  share the left side with Treemacs. Claude stays on the right.
+  share the left side with Treemacs. Claude is not a side window (side windows on
+  one side stack vertically, so it would sit under the sidebar): `claude-code-ide-use-side-window`
+  is left on for everything else (the walkthrough, and sessions in projects that aren't godel
+  tasks, keep its right side window), and config.el advises claude-code-ide's display function
+  so a **task's** main session (`*claude-code[REPO/SLUG]*`, the name `godel-agent-buffer-name`
+  gives it; other projects' names have no slash) is split off the left edge of the main window
+  area by `my/claude-code-display-left-of-main`, just right of the sidebar, and dedicated so
+  magit and diffs don't replace it. Showing it when it's already visible (`SPC c l`) returns
+  its window untouched (`my/claude-code-reuse-window`, not `display-buffer-reuse-window`, which
+  would apply claude-code-ide's side-window alist to it). (It's `display-buffer-overriding-action`,
+  not a `display-buffer-alist` entry: Doom's popup module replaces that list after config.el
+  loads.) Code that needs a window for magit, a diff or a file uses `godel-agent-content-window`:
+  the main window is internal when Claude and magit sit side by side. The sidebar's `d` asks
+  for it strictly (`godel-board--select-content-window` with STRICT): if magit's window was
+  closed, Claude's is split rather than replaced by the diff.
+  The session's window is an ordinary one, **not** protected from `delete-other-windows`
+  (config.el builds its own display alist, so claude-code-ide's `no-delete-other-windows`
+  isn't merged in): `SPC w o` closes it (`SPC c t` brings it back), and so does ediff when
+  claude-code-ide shows an edit as a diff. That is deliberate: claude-code-ide deletes the
+  side windows before ediff, ediff takes the frame, claude-code-ide shows Claude again
+  (here: split off the left, with `my/claude-code-ediff-fraction`, 30%, instead of 60% while an
+  ediff control buffer is showing, so the diff keeps most of the frame), and quitting restores
+  the layout. Checked against the real `claude-code-ide--display-buffer-in-side-window` and
+  ediff, started from magit's window and from Claude's; the tests in `godel-test.el` load
+  config.el's block and do the same.
+  After `SPC w o` from Claude's window it is the frame's main window, which `delete-window`
+  refuses to delete, so claude-code-ide's hide (`SPC c t`) would fail:
+  `my/claude-code-hide-advice` shows another buffer in it instead.
+  `SPC c w` toggles a task session between 60% and 40% of the main area, and the side windows
+  (walkthrough, other projects) between 150 and 100 columns, as it always did for them.
 
 ### New task (`n`)
 
@@ -1086,7 +1116,8 @@ list refresh.
 
 Added after the first end-to-end run: the pin check (see Model and effort),
 tested against the real wrapper (ok in 3.9s, notdiamond config unchanged).
-31 ERT tests in total.
+31 ERT tests in total. (The pin check was removed on 2026-11-20 with the pin
+itself; see Model and effort.)
 
 Not built yet: the `/` filter on the board and the GUI performance check.
 (The TUI picker fallback was dropped; see Model and effort.)
@@ -1095,11 +1126,12 @@ Phase 1 tests for the launch environment:
 - Unit (ERT): for the Not Diamond entry, the environment has no
   `NOTDIAMOND_RESEARCH_MODEL_PIN`, `NOTDIAMOND_RESEARCH_EFFORT_PIN` or
   `NOTDIAMOND_ROUTING` with a value, **even when Emacs's own environment has
-  them set**; the effort is passed as `--effort` only. For a pinned entry, all
-  three are set and `--effort` matches the effort pin.
+  them set**; the effort is passed as `--effort` only. (Until 2026-11-20 a
+  fixed-model entry had all three set; now it gets `--model <value>` and no pin
+  variable either.)
 - Integration: a Not Diamond task's `SessionStart` reports `notdiamond[1m]`,
   and the proxy log shows routing decisions (not `passthrough`) for it, also
-  while a pinned task is running.
+  while a fixed-model task is running.
 
 **Phase 1.1: board by repo, and the sidebar.** Built 2026-11-13 (see Board
 and Sidebar under Interface). `godel-sidebar.el`; the board and the sidebar
@@ -1218,7 +1250,7 @@ the end):
 - **Fan-out:** start several attempts at one prompt (different models or
   efforts, each its own task), then compare them, pick a winner, or have a
   judge model choose. Each attempt gets its own launch environment, so a
-  group can mix Not Diamond and pinned attempts. Board keys were sketched
+  group can mix Not Diamond and fixed-model attempts. Board keys were sketched
   as `F` (fan out), `c` / `w` / `J` (compare, winner, judge).
 - **Port list:** show the ports each task's processes listen on (`ss
   -ltnp` over the task's process tree), since worktrees don't isolate
@@ -1239,18 +1271,20 @@ off the laptop is planned in `REMOTE-PLAN.md`, not as cloud workspaces.
   changing the rest of godel.
 - **Shared resources.** Worktrees don't isolate ports, databases or
   credentials. Document this; don't try to solve it in the MVP.
-- **The model pin is named "research".** It looks like an internal experiment
-  switch and could change or disappear in a wrapper update. The pin check
-  catches that when the wrapper's version changes, before any task is
-  launched; every launch is also checked (`SessionStart` model, or the
-  processes on resume). Either way the failure is reported, not silent. Ask the CLI maintainers to
-  keep it or to provide a supported flag (e.g. honouring `--model`); switch to
-  that when it exists.
+- **The wrapper's `--model` handling.** godel used the wrapper's internal
+  "research" pin variables until 2026-11-20, which looked like an experiment
+  switch that could disappear in an update. It now uses the documented
+  `--model` instead. If an update stopped honouring it, every launch is still
+  checked (`SessionStart` model, or the processes on resume), so the failure is
+  reported as a model mismatch, not silent. The remaining way to break it is a
+  pin variable in the environment, which makes the wrapper drop `--model`;
+  godel removes them from every launch.
 - **Routing off leaking to the proxy.** Handled by the proxy guard. If the
   guard is ever bypassed, every session loses routing until the proxy
   restarts. Check `/proc/<proxy pid>/environ` in tests, and keep a test that
-  runs a Not Diamond session next to a pinned one and checks the proxy log
-  for routing decisions (`spike/pin-test.sh` with model `-`).
+  runs a Not Diamond session next to a fixed-model one and checks the proxy
+  log for routing decisions (`spike/pin-test.sh` with model `-` did this with
+  the pin).
 - **Driving the TUI.** Still needed for the trust dialog (once per repo) and
   waiting for the input box. These depend on screen text, which a Claude
   Code update can change. godel checks what it sees before pressing anything

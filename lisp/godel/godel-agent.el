@@ -5,7 +5,7 @@
 ;; terminal).  Every launch:
 ;;   1. makes sure the notdiamond proxy is running cleanly (proxy guard),
 ;;   2. builds the environment and flags with `godel-models-launch-env'
-;;      (Not Diamond: pin variables removed; other models: pinned),
+;;      (the model is chosen with --model; pin variables removed),
 ;;   3. starts claude-code-ide in the task's worktree with godel's hooks,
 ;;   4. answers the trust dialog if Claude shows one (asking first),
 ;;   5. on SessionStart checks the model, then sends the pending prompt.
@@ -16,6 +16,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'subr-x)
+(require 'seq)
 (require 'godel-task)
 (require 'godel-models)
 (require 'godel-status)
@@ -80,6 +81,22 @@ don't collide; other directories keep claude-code-ide's usual name."
   (when-let* ((buf (godel-agent-buffer task)))
     (process-live-p (get-buffer-process buf))))
 
+(defun godel-agent-session-window-p (window)
+  "Non-nil if WINDOW shows a Claude session buffer."
+  (string-prefix-p "*claude-code[" (buffer-name (window-buffer window))))
+
+(defun godel-agent-content-window (&optional strict)
+  "A live window in the main area for showing magit, diffs and files.
+Side windows are skipped, and so are windows showing a Claude session, so the
+conversation isn't replaced.  The selected window comes first.  If only
+Claude windows are left, return one of them, or nil if STRICT.  (The main
+window itself can't be used: it's internal once Claude and magit sit side by
+side.)"
+  (let ((windows (seq-remove (lambda (w) (window-parameter w 'window-side))
+                             (window-list nil 'no-minibuf))))
+    (or (seq-find (lambda (w) (not (godel-agent-session-window-p w))) windows)
+        (and (not strict) (car windows)))))
+
 ;;;; Launch
 
 (defun godel-agent--server-socket ()
@@ -102,12 +119,23 @@ don't collide; other directories keep claude-code-ide's usual name."
 
 (defun godel-agent-flags (task launch &optional resume)
   "CLI flags (one string) for TASK with LAUNCH from `godel-models-launch-env'.
-With RESUME, resume the task's session instead of starting it."
+With RESUME, resume the task's session instead of starting it.
+
+A resumed session is always given --model.  LAUNCH's args name the model
+for anything but Not Diamond.  For Not Diamond they don't: the wrapper adds
+`--model notdiamond...' to a fresh launch, but not to one that resumes, where
+it leaves the model to the session.  Then nothing says which model the
+session is on, so `godel-agent-check-launch' can't tell (it reported
+\"couldn't find Claude's --model\"), and a task switched from another model
+to Not Diamond would come back on the old one."
   (mapconcat #'shell-quote-argument
              (append (if resume
                          (list "--resume" (plist-get task :session-id))
                        (list "--session-id" (plist-get task :session-id)))
                      (list "--settings" (godel-agent-hooks-json))
+                     (when-let* (((and resume (not (member "--model" (plist-get launch :args)))))
+                                 (model (plist-get task :model)))
+                       (list "--model" model))
                      (plist-get launch :args)
                      (when-let* ((mode (plist-get task :permission-mode)))
                        (list "--permission-mode" mode)))
@@ -147,13 +175,6 @@ directory would make claude-code-ide ask for an instance name."
 
 (defun godel-agent--start (task resume on-launch)
   (let ((id (plist-get task :id)))
-    (when (and (godel-models-pin-broken-p)
-               (not (godel-models-router-p (godel-models-find (plist-get task :model)))))
-      (godel-task-update id :state 'stopped
-                         :last-event (format "not started: the model pin isn't working (%s)"
-                                             (cdr godel-models-pin-status)))
-      (funcall on-launch nil)
-      (user-error "godel: pinned models are unavailable: %s" (cdr godel-models-pin-status)))
     (puthash id (list on-launch) godel-agent--starting)
     ;; A resumed session comes back in the state it was in (e.g. still
     ;; ready for review); see the SessionStart case in godel-status.el.
@@ -194,7 +215,6 @@ directory would make claude-code-ide ask for an instance name."
          (claude-code-ide-cli-extra-flags (godel-agent-flags task launch resume))
          (claude-code-ide-focus-on-open nil))
     (godel-task-update id :expect-model (plist-get launch :expect)
-                       :pinned (plist-get launch :pinned)
                        :model-actual nil
                        :last-event (format "starting Claude on %s" (plist-get entry :name)))
     (save-window-excursion (claude-code-ide))
@@ -241,9 +261,10 @@ directory would make claude-code-ide ask for an instance name."
 PROCS is a list of (ARGS . ENV) for the session process and its
 descendants: ARGS and ENV are lists of strings, as in /proc/PID/cmdline
 and /proc/PID/environ.  Returns (OK . DETAIL).
-- Not Diamond: no process may carry a pin variable, and Claude must
-  have been given --model notdiamond....
-- Pinned: Claude must have been given --model with the entry's value."
+- No process may carry a pin variable: with one set, the wrapper drops
+  godel's --model and runs the pinned model instead.
+- Claude must have been given --model with the entry's value (for Not
+  Diamond, any --model notdiamond...)."
   (let* ((pins (delete-dups
                 (cl-loop for (_ . env) in procs
                          append (cl-loop for e in env
@@ -255,12 +276,11 @@ and /proc/PID/environ.  Returns (OK . DETAIL).
                          when (cadr tail) return (cadr tail))))
     (cond
      ((null model) (cons nil "couldn't find Claude's --model"))
+     (pins (cons nil (format "pin variable in the session: %s" (string-join pins ", "))))
      ((godel-models-router-p entry)
-      (cond (pins (cons nil (format "pin leaked into a Not Diamond session: %s"
-                                    (string-join pins ", "))))
-            ((not (string-prefix-p "notdiamond" model))
-             (cons nil (format "Claude was started with --model %s" model)))
-            (t (cons t model))))
+      (if (string-prefix-p "notdiamond" model)
+          (cons t model)
+        (cons nil (format "Claude was started with --model %s" model))))
      ((equal model (plist-get entry :value)) (cons t model))
      (t (cons nil (format "Claude was started with --model %s, expected %s"
                           model (plist-get entry :value)))))))

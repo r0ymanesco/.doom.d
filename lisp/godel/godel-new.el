@@ -23,13 +23,8 @@
 
 ;;;; Readers
 
-(defun godel-new--unavailable-p (m)
-  "Non-nil if model M can't be used because the pin check failed."
-  (and (not (godel-models-router-p m)) (godel-models-pin-broken-p)))
-
 (defun godel-new--model-label (m)
-  (format "%-22s %s%s" (plist-get m :name) (plist-get m :description)
-          (if (godel-new--unavailable-p m) "  [unavailable: model pin not working]" "")))
+  (format "%-22s %s" (plist-get m :name) (plist-get m :description)))
 
 (defun godel-new--read-model (prompt _initial _history)
   "Read a model value, showing names and descriptions like /model."
@@ -39,9 +34,6 @@
                            :key (lambda (m) (plist-get m :value)) :test #'equal))
          (pick (completing-read prompt (mapcar #'car choices) nil t nil nil
                                 (and default (godel-new--model-label default)))))
-    (when (godel-new--unavailable-p (cdr (assoc pick choices)))
-      (user-error "godel: %s is unavailable: %s" (plist-get (cdr (assoc pick choices)) :name)
-                  (cdr godel-models-pin-status)))
     (plist-get (cdr (assoc pick choices)) :value)))
 
 (defun godel-new--current-model ()
@@ -75,7 +67,7 @@
    (lambda () (format "New task in %s" (abbreviate-file-name godel-new--repo)))
    ("-b" "base branch" "--base=" :reader godel-new--read-base :always-read t)
    ("-m" "model" "--model=" :reader godel-new--read-model :always-read t)
-   ;; Also for Not Diamond, which gets it as --effort (see PLAN.md).
+   ;; Every model gets it as --effort, Not Diamond too (see PLAN.md).
    ("-e" "effort" "--effort=" :reader godel-new--read-effort :always-read t)
    ("-p" "permission mode" "--permission-mode="
     :choices ("default" "acceptEdits" "plan" "auto"))]

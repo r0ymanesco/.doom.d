@@ -506,7 +506,7 @@ it.  Without Doom workspaces, the board opens in the selected window."
       (+workspace-switch godel-board-workspace t)
       (if-let* ((window (get-buffer-window buffer)))
           (select-window window)
-        (select-window (window-main-window))
+        (godel-board--select-content-window)
         (delete-other-windows)
         (switch-to-buffer buffer)))))
 
@@ -526,16 +526,27 @@ it.  Without Doom workspaces, the board opens in the selected window."
   (interactive)
   (if godel-board--compact (godel-sidebar-hide) (quit-window)))
 
+(defun godel-board--select-content-window (&optional strict)
+  "Select a live window in the main area, preferring one not showing Claude.
+From the sidebar the selected window is a side window, which can't be made
+the only window, and the main window is internal once Claude and magit sit
+side by side.  The window is undedicated, so what's shown next can replace it.
+If only Claude's windows are left (magit's was closed), the window is Claude's
+own, unless STRICT: then Claude's window is split and the new half is
+selected, so what's shown next doesn't replace the conversation."
+  (let ((window (or (godel-agent-content-window strict)
+                    (and strict (split-window (godel-agent-content-window) nil 'right)))))
+    (set-window-dedicated-p window nil)
+    (select-window window)))
+
 (defun godel-board-visit ()
-  "Open the task's workspace: magit-status on the left, Claude on the right."
+  "Open the task's workspace: magit-status in the main window, Claude beside it."
   (interactive)
   (let* ((task (godel-board--task))
          (buffer (godel-agent-buffer task)))
     (when (fboundp '+workspace-switch)
       (+workspace-switch (plist-get task :slug) t))
-    ;; From the sidebar the selected window is a side window, which can't be
-    ;; made the only window.
-    (select-window (window-main-window))
+    (godel-board--select-content-window)
     (delete-other-windows)
     (if (file-directory-p (plist-get task :worktree))
         (magit-status-setup-buffer (plist-get task :worktree))
@@ -554,7 +565,7 @@ it.  Without Doom workspaces, the board opens in the selected window."
     (when (fboundp 'godel-sidebar-sync) (godel-sidebar-sync))))
 
 (defun godel-board--display-session (buffer select)
-  "Show the session BUFFER on the right; with SELECT, select its window."
+  "Show the session BUFFER between the sidebar and magit; with SELECT, select it."
   (when (fboundp 'claude-code-ide--display-buffer-in-side-window)
     (let ((window (or (get-buffer-window buffer)
                       (claude-code-ide--display-buffer-in-side-window buffer))))
@@ -590,7 +601,8 @@ workspace."
   (interactive)
   (require 'godel-review)
   (let ((task (godel-board--task)))
-    (when godel-board--compact (select-window (window-main-window)))
+    ;; Strict: the diff must not replace Claude's conversation.
+    (when godel-board--compact (godel-board--select-content-window t))
     (godel-review-diff task)))
 
 (defun godel-board-review ()

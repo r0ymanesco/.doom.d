@@ -191,3 +191,73 @@ was still running. Proxy log during the test:
 The Not Diamond session was routed normally. Routing off applies only to the
 pinned session's own launch; the shared proxy's environment (checked through
 `/proc`) has no pin or routing variables.
+
+## 9. Follow-up, 2026-11-20: `--model` replaces the pin
+
+notdiamond 0.2.17-rc.8 accepts `--model` for a specific model, so godel no
+longer needs the pin variables (section 8). From the bundled wrapper
+(`dist/main.js`) and runs against the real wrapper, the proxy and Claude:
+
+- **Wrapper.** It adds `--model <Not Diamond>` itself unless the arguments
+  already have a `--model`, and then prints "Using the --model you passed
+  instead of Not Diamond (switch back with /model)". On a resume
+  (`--resume`, `--continue`) it adds none, unless a pin is set. The README
+  says the same: "Pass `--model` to start on another model instead".
+- **Pin and `--model` don't combine.** With the pin set, the wrapper
+  *strips* the `--model` it's given ("Ignoring --model: this session runs X
+  at E effort") and writes `model` and `effortLevel` into the settings it
+  passes. So a pin variable inherited from Emacs's environment would override
+  godel's choice, and godel removes them from every launch.
+- **Proxy.** The router's decision function treats a request whose model isn't
+  Not Diamond as client-selected and returns it as named, source
+  `passthrough`. It never reads the pin variables; `NOTDIAMOND_ROUTING=off`
+  only matters in the proxy's own environment (section 8).
+- **Arguments** (stand-in binary, no model call, empty environment), `--effort
+  low` throughout:
+
+| Launch | `--model` Claude gets | `model` in the settings |
+|---|---|---|
+| pin `haiku`, fresh | `haiku` | `haiku` |
+| pin `haiku`, `--resume` | `haiku` | `haiku` |
+| none (router), fresh | `notdiamond[1m]` | `notdiamond[1m]` |
+| none (router), `--resume` | none | `notdiamond[1m]` |
+| `--model haiku`, fresh | `haiku` | `notdiamond[1m]` |
+| `--model haiku`, `--resume` | `haiku` | `notdiamond[1m]` |
+
+  The settings still name Not Diamond when `--model` is given; the command
+  line wins.
+- **Real requests** ("reply ok", Haiku, low effort, headless, no pin variable,
+  no `ANTHROPIC_API_KEY`), one with `--model haiku` and one with the three pin
+  variables: both reported `claude-haiku-5-5` and `apiKeySource` `none`, and
+  the proxy log has the same row for each, `claude-haiku-5-5  low
+  passthrough  4tok`.
+
+Only Haiku at low effort was tried, and only headless launches. The settings
+`effortLevel` isn't set without a pin, so `--effort` is the only source of
+effort; godel always passes it.
+
+**Resume, on real sessions (2026-11-20).** The check above ran on stand-in
+binaries and synthetic process lists, so it was also run for real. A batch Emacs
+with an empty environment (no pin variable, no API key) built each launch with
+godel's own `godel-models-launch-env` and `godel-agent-flags`, started the real
+`notdiamond-claude` headless (hooks included) in a scratch directory, sampled the
+live process tree with `godel-agent--proc-file` while it ran, and passed every
+sample to `godel-agent-check-launch`. Haiku and Not Diamond sessions were
+created, then resumed, then each resumed on the other model (what `R` does):
+
+| Launch | Pin variable in the tree | `godel-agent-check-launch` | Claude reports | Proxy row |
+|---|---|---|---|---|
+| haiku, fresh | none | ok `haiku` | `claude-haiku-5-5` | `haiku low passthrough` |
+| haiku, resumed | none | ok `haiku` | `claude-haiku-5-5` | `haiku low passthrough` |
+| Not Diamond, fresh | none | ok `notdiamond[1m]` | `notdiamond[1m]` | `chat / trivial` (routed) |
+| Not Diamond, resumed (`--model notdiamond[1m]`) | none | ok `notdiamond[1m]` | `notdiamond[1m]` | `server / trivial` (routed) |
+| haiku session, resumed on Not Diamond | none | ok `notdiamond[1m]` | `notdiamond[1m]` | `server / trivial` (routed) |
+| Not Diamond session, resumed on haiku | none | ok `haiku` | `claude-haiku-5-5` | `haiku low passthrough` |
+
+So the wrapper doesn't export a pin variable to its children when given
+`--model`, a fixed-model resume passes the check, and a Not Diamond resume with
+an explicit `--model notdiamond[1m]` is still routed. The notice "Using the
+--model you passed instead of Not Diamond" appears on those resumes and changes
+nothing. Each run took 3 to 4 processes (wrapper, Claude, hook scripts). Not
+done: an interactive session in godel's ghostel terminal; headless runs share
+the wrapper's launch code but not the terminal.
