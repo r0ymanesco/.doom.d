@@ -67,7 +67,7 @@
    (lambda () (format "New task in %s" (abbreviate-file-name godel-new--repo)))
    ("-b" "base branch" "--base=" :reader godel-new--read-base :always-read t)
    ("-m" "model" "--model=" :reader godel-new--read-model :always-read t)
-   ;; Also for Not Diamond, which gets it as --effort (see PLAN.md).
+   ;; Every model gets it as --effort, Not Diamond too (see PLAN.md).
    ("-e" "effort" "--effort=" :reader godel-new--read-effort :always-read t)
    ("-p" "permission mode" "--permission-mode="
     :choices ("default" "acceptEdits" "plan" "auto"))]

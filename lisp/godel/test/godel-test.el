@@ -28,6 +28,8 @@
           (godel-event-functions nil)
           (godel-status-session-start-functions nil)
           (godel-models--cache nil)
+          ;; The tests' own sidebar buffer, so they never draw into or kill a live one.
+          (godel-sidebar-buffer-name (format "*godel-sidebar-%s*" (make-temp-name "")))
           ;; Never reach a real notdiamond proxy from the tests.
           (godel-proxy-address (cons "127.0.0.1" (godel-test-free-port))))
      (unwind-protect (progn ,@body)
@@ -2848,31 +2850,48 @@ walkthrough's window stays selected."
         (kill-buffer review)
         (when-let* ((b (get-file-buffer (expand-file-name "app.py" wt)))) (kill-buffer b))))))
 
+(defun godel-test-unique (format-string)
+  "FORMAT-STRING with its %s replaced by a token that is new on every call.
+The window tests give their buffers names no live session has, so one run from
+a running Emacs can't collide with, or kill, your own buffers, and one test's
+leftovers can't change another's result."
+  (format format-string (make-temp-name "")))
+
+(defmacro godel-test-killing-new-buffers (&rest body)
+  "Run BODY, then kill the buffers it created, and only those."
+  (declare (indent 0))
+  (let ((existing (make-symbol "existing")))
+    `(let ((,existing (buffer-list)))
+       (unwind-protect (progn ,@body)
+         (dolist (b (buffer-list))
+           (unless (or (memq b ,existing)
+                       (string-match-p "\\` \\*\\(Minibuf\\|Echo Area\\)" (buffer-name b)))
+             (kill-buffer b)))))))
+
 (ert-deftest godel-test-content-window-skips-claude-and-side-windows ()
   "With Claude and magit side by side the main window is internal; the
 content window is the one that isn't Claude, never a side window."
-  (save-window-excursion
-    (delete-other-windows)
-    (let* ((claude (get-buffer-create "*claude-code[repo/slug]*"))
-           (magit (get-buffer-create "*magit: x*"))
-           (side (display-buffer-in-side-window (get-buffer-create "*godel-sidebar*")
-                                                '((side . left) (slot . 1)))))
-      (unwind-protect
-          (progn
-            (switch-to-buffer magit)
-            (let ((claude-window (split-window (window-main-window) nil 'left)))
-              (set-window-buffer claude-window claude)
-              (select-window claude-window)
-              (should-not (window-live-p (window-main-window)))
-              ;; Even with Claude selected, magit's window is chosen.
-              (should (eq (window-buffer (godel-agent-content-window)) magit))
-              (select-window side)
-              (should (eq (window-buffer (godel-agent-content-window t)) magit))
-              ;; Only Claude left: strict gives nil, otherwise Claude's window.
-              (set-window-buffer (get-buffer-window magit) claude)
-              (should-not (godel-agent-content-window t))
-              (should (eq (window-buffer (godel-agent-content-window)) claude))))
-        (kill-buffer claude) (kill-buffer magit)))))
+  (godel-test-killing-new-buffers
+    (save-window-excursion
+      (delete-other-windows)
+      (let* ((claude (get-buffer-create (godel-test-unique "*claude-code[repo%s/slug]*")))
+             (magit (get-buffer-create (godel-test-unique "*magit: %s*")))
+             (side (display-buffer-in-side-window
+                    (get-buffer-create (godel-test-unique "*godel-sidebar-%s*"))
+                    '((side . left) (slot . 1)))))
+        (switch-to-buffer magit)
+        (let ((claude-window (split-window (window-main-window) nil 'left)))
+          (set-window-buffer claude-window claude)
+          (select-window claude-window)
+          (should-not (window-live-p (window-main-window)))
+          ;; Even with Claude selected, magit's window is chosen.
+          (should (eq (window-buffer (godel-agent-content-window)) magit))
+          (select-window side)
+          (should (eq (window-buffer (godel-agent-content-window t)) magit))
+          ;; Only Claude left: strict gives nil, otherwise Claude's window.
+          (set-window-buffer (get-buffer-window magit) claude)
+          (should-not (godel-agent-content-window t))
+          (should (eq (window-buffer (godel-agent-content-window)) claude)))))))
 
 ;;;; Claude's window layout (config.el), against the real claude-code-ide
 
@@ -2882,72 +2901,84 @@ content window is the one that isn't Claude, never a side window."
   "The advice config.el's layout block installs: (FUNCTION . ADVICE).")
 
 (defun godel-test-load-claude-layout ()
-  "Evaluate config.el's Claude layout block; return nil if it can't be found."
+  "Evaluate config.el's Claude layout block.
+A missing config.el or block is a test failure, not a skip: otherwise renaming
+the marker comment would silently switch off every layout test."
   (let* ((file (expand-file-name "../../../config.el"
                                  (file-name-directory (or load-file-name buffer-file-name
                                                           (locate-library "godel-test")))))
-         (text (and (file-readable-p file)
-                    (with-temp-buffer (insert-file-contents file) (buffer-string))))
-         (a (and text (string-match ";; Claude code\n;; Layout" text)))
-         (b (and text (string-match "(use-package! claude-code-ide" text))))
-    (when (and a b (< a b))
-      (with-temp-buffer
-        (insert (substring text a b))
-        (goto-char (point-min))
-        (condition-case nil
-            (while t (eval (read (current-buffer)) t))
-          (end-of-file nil)))
-      (fboundp 'my/claude-code-display-advice))))
+         (text (progn (should (file-readable-p file))
+                      (with-temp-buffer (insert-file-contents file) (buffer-string))))
+         (a (string-match ";; Claude code\n;; Layout" text))
+         (b (string-match "(use-package! claude-code-ide" text)))
+    (should (and a b (< a b)))
+    (with-temp-buffer
+      (insert (substring text a b))
+      (goto-char (point-min))
+      (condition-case nil
+          (while t (eval (read (current-buffer)) t))
+        (end-of-file nil)))
+    (should (fboundp 'my/claude-code-display-advice))))
 
-(defmacro godel-test-with-claude-layout (&rest body)
-  "Run BODY in a 160-column frame with the sidebar and magit windows set up and
-config.el's Claude layout active.  Binds `claude' (a task's session buffer),
-`review' (an extra instance of it), `other' (a session outside any godel task)
-and `magit' (the magit window).
-Only buffers BODY creates are killed afterwards, and the advice is removed only
-if this test installed it: run from a live Emacs, it leaves your sessions and
-your own layout alone."
+(defmacro godel-test-with-claude-config (&rest body)
+  "Run BODY with config.el's Claude layout block evaluated.
+The advice it installs is removed afterwards unless it was already there: run
+from a live Emacs, this leaves your own setup alone."
   (declare (indent 0))
   `(progn
-     (skip-unless (require 'claude-code-ide nil t))
-     (skip-unless (not (cl-some #'get-buffer
-                                '("*claude-code[repo/slug]*" "*claude-code[repo/slug:review]*"
-                                  "*claude-code[plain]*" "*magit: x*" "*godel-sidebar*"
-                                  "diff-A" "diff-B"))))
-     (let* ((width (frame-width))
-            (existing (buffer-list))
-            (had-advice (cl-every (lambda (pair) (advice-member-p (cdr pair) (car pair)))
-                                  godel-test-claude-advice))
-            (claude-code-ide-use-side-window t)
-            (claude-code-ide-window-side 'right)
-            (claude-code-ide-window-width 30)
-            (claude-code-ide-focus-on-open nil)
-            claude review other magit)
+     (should (require 'claude-code-ide nil t))
+     (let ((had-advice (cl-every (lambda (pair) (advice-member-p (cdr pair) (car pair)))
+                                 godel-test-claude-advice)))
        (unwind-protect
-           (save-window-excursion
-             (skip-unless (godel-test-load-claude-layout))
-             (let ((my/claude-code-main-fraction 0.6)
-                   (my/claude-code-side-widths '(30 20)))
-               (setq claude (get-buffer-create "*claude-code[repo/slug]*")
-                     review (get-buffer-create "*claude-code[repo/slug:review]*")
-                     other (get-buffer-create "*claude-code[plain]*"))
-               (set-frame-width nil 160)
-               (delete-other-windows)
-               (set-window-parameter
-                (display-buffer-in-side-window (get-buffer-create "*godel-sidebar*")
-                                               '((side . left) (slot . 1) (window-width . 12)))
-                'no-delete-other-windows t)
-               (switch-to-buffer (get-buffer-create "*magit: x*"))
-               (setq magit (selected-window))
-               ,@body))
-         (set-frame-width nil width)
+           (progn (godel-test-load-claude-layout) ,@body)
          (unless had-advice
            (dolist (pair godel-test-claude-advice)
-             (when (fboundp (car pair)) (advice-remove (car pair) (cdr pair)))))
-         (dolist (b (buffer-list))
-           (unless (or (memq b existing)
-                       (string-match-p "\\` \\*\\(Minibuf\\|Echo Area\\)" (buffer-name b)))
-             (kill-buffer b)))))))
+             (when (fboundp (car pair)) (advice-remove (car pair) (cdr pair)))))))))
+
+(defmacro godel-test-with-claude-layout (&rest body)
+  "Run BODY in a 160-column frame, for a real task, with a sidebar and a magit
+window set up and config.el's Claude layout active.  Binds:
+  `task'            the task (a real worktree under `tmp')
+  `claude'          its session buffer, named by `godel-agent-buffer-name'
+  `review'          an extra instance of it (`:review')
+  `other'           a session outside any godel task
+  `sidebar'         the sidebar's window (12 columns, protected) and
+  `sidebar-buffer'  its buffer
+  `magit'           the magit window and `magit-buffer' its buffer.
+Every buffer's name is one no live session has.  Only the buffers created here
+and by BODY are killed afterwards, and the advice is removed only if this test
+installed it, so run from a live Emacs it leaves your sessions and layout alone."
+  (declare (indent 0))
+  `(godel-test-with-env
+     (godel-test-killing-new-buffers
+       (godel-test-with-claude-config
+         (let* ((width (frame-width))
+                (claude-code-ide-use-side-window t)
+                (claude-code-ide-window-side 'right)
+                (claude-code-ide-window-width 30)
+                (claude-code-ide-focus-on-open nil)
+                (task (godel-test-review-task tmp))
+                (worktree (plist-get task :worktree))
+                (claude (get-buffer-create (godel-agent-buffer-name worktree)))
+                (review (get-buffer-create (godel-agent-buffer-name worktree "review")))
+                (other (get-buffer-create
+                        (godel-agent-buffer-name (expand-file-name (make-temp-name "plain") tmp))))
+                (sidebar-buffer (get-buffer-create (godel-test-unique "*godel-sidebar-%s*")))
+                (magit-buffer (get-buffer-create (godel-test-unique "*magit: %s*")))
+                sidebar magit)
+           (unwind-protect
+               (save-window-excursion
+                 (let ((my/claude-code-main-fraction 0.6)
+                       (my/claude-code-side-widths '(30 20)))
+                   (set-frame-width nil 160)
+                   (delete-other-windows)
+                   (setq sidebar (display-buffer-in-side-window
+                                  sidebar-buffer '((side . left) (slot . 1) (window-width . 12))))
+                   (set-window-parameter sidebar 'no-delete-other-windows t)
+                   (switch-to-buffer magit-buffer)
+                   (setq magit (selected-window))
+                   ,@body))
+             (set-frame-width nil width)))))))
 
 (defun godel-test-frame-columns ()
   "Columns the windows span.  (`frame-width' doesn't follow `set-frame-width'
@@ -2963,13 +2994,30 @@ in a batch Emacs.)"
 (defun godel-test-near-p (actual expected)
   (<= (abs (- actual expected)) 1))
 
+(ert-deftest godel-test-claude-layout-recognises-godel-buffer-names ()
+  "The layout is for the buffers godel really names `*claude-code[REPO/SLUG]*',
+checked on what `godel-agent-buffer-name' produces for a task, its `:review'
+instance, and a directory that is no task: if the naming changes, this fails
+instead of the layout quietly falling back to the right side window."
+  (godel-test-with-claude-layout
+    (should (my/claude-code-main-session-p claude))
+    (should-not (my/claude-code-main-session-p review))
+    (should-not (my/claude-code-main-session-p other))
+    ;; The real display function puts exactly the first of them in the main area.
+    (dolist (buffer (list review other))
+      (claude-code-ide--display-buffer-in-side-window buffer)
+      (should (eq (window-parameter (get-buffer-window buffer) 'window-side) 'right))
+      (delete-window (get-buffer-window buffer)))
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (should-not (window-parameter (get-buffer-window claude) 'window-side))))
+
 (ert-deftest godel-test-claude-layout-beside-sidebar ()
   "The session opens between the sidebar and magit, takes 60% of the main
 area, is an ordinary window (`SPC w o' closes it, leaving magit and the sidebar)."
   (godel-test-with-claude-layout
     (claude-code-ide--display-buffer-in-side-window claude)
     (should (equal (godel-test-layout-names)
-                   '("*godel-sidebar*" "*claude-code[repo/slug]*" "*magit: x*")))
+                   (mapcar #'buffer-name (list sidebar-buffer claude magit-buffer))))
     (let ((window (get-buffer-window claude)))
       (should-not (window-parameter window 'window-side))
       (should-not (window-parameter window 'no-delete-other-windows))
@@ -2980,7 +3028,8 @@ area, is an ordinary window (`SPC w o' closes it, leaving magit and the sidebar)
     ;; which godel protects.
     (select-window magit)
     (delete-other-windows)
-    (should (equal (godel-test-layout-names) '("*godel-sidebar*" "*magit: x*")))))
+    (should (equal (godel-test-layout-names)
+                   (mapcar #'buffer-name (list sidebar-buffer magit-buffer))))))
 
 (ert-deftest godel-test-claude-layout-only-for-task-sessions ()
   "A session outside a godel task, and an extra instance, keep claude-code-ide's
@@ -3007,7 +3056,7 @@ was: still 60%, still closable by `delete-other-windows'."
       (select-window window)
       (delete-other-windows)
       (should (equal (godel-test-layout-names)
-                     '("*godel-sidebar*" "*claude-code[repo/slug]*"))))))
+                     (mapcar #'buffer-name (list sidebar-buffer claude)))))))
 
 (ert-deftest godel-test-claude-hide-when-it-is-the-main-window ()
   "After `SPC w o' from Claude's window it is the frame's main window, which
@@ -3020,7 +3069,7 @@ was: still 60%, still closable by `delete-other-windows'."
     (let ((session (make-claude-code-ide-mcp-session :buffer claude)))
       (claude-code-ide--toggle-existing-window session)
       (should-not (get-buffer-window claude))
-      (should (= (length (cl-remove "*godel-sidebar*" (godel-test-layout-names)
+      (should (= (length (cl-remove (buffer-name sidebar-buffer) (godel-test-layout-names)
                                     :test #'equal))
                  1))
       (claude-code-ide--toggle-existing-window session)
@@ -3061,6 +3110,33 @@ area alone."
       (should (= (window-total-width (get-buffer-window claude))
                  (- (godel-test-frame-columns) 12 (window-total-width review-window)))))))
 
+(ert-deftest godel-test-claude-width-toggle-message ()
+  "The message says what was resized: a share for task sessions, columns for
+side windows, and both when both are showing or when neither is (the setting
+changes either way)."
+  (godel-test-with-claude-layout
+    (let (messages)
+      (cl-flet ((toggle ()
+                  (cl-letf (((symbol-function 'message)
+                             (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+                    (claude-code-ide-toggle-width))
+                  (car messages)))
+        ;; Only the task session showing (sides are 30 -> 20 columns, 60% -> 40%).
+        (claude-code-ide--display-buffer-in-side-window claude)
+        (should (equal (toggle) "Claude Code width: 40%"))
+        (should (equal (toggle) "Claude Code width: 60%"))
+        ;; Only a side window showing.
+        (delete-window (get-buffer-window claude))
+        (claude-code-ide--display-buffer-in-side-window review)
+        (should (equal (toggle) "Claude Code width: 20 columns"))
+        ;; Both.
+        (claude-code-ide--display-buffer-in-side-window claude)
+        (should (equal (toggle) "Claude Code width: 60% / 30 columns"))
+        ;; Neither.
+        (delete-window (get-buffer-window claude))
+        (delete-window (get-buffer-window review))
+        (should (equal (toggle) "Claude Code width: 40% / 20 columns"))))))
+
 (ert-deftest godel-test-claude-ide-diff-from-either-window ()
   "claude-code-ide's diff (openDiff: delete the side windows, ediff, show Claude
 again, restore the layout on quit) gives the same result whether it starts in
@@ -3069,7 +3145,8 @@ left with a small share, and quitting restores the original layout."
   (dolist (start '(magit claude))
     (godel-test-with-claude-layout
       (claude-code-ide--display-buffer-in-side-window claude)
-      (let* ((a (get-buffer-create "diff-A")) (b (get-buffer-create "diff-B"))
+      (let* ((a (get-buffer-create (godel-test-unique "diff-A-%s")))
+             (b (get-buffer-create (godel-test-unique "diff-B-%s")))
              (before (godel-test-layout-names))
              (columns (godel-test-frame-columns))
              (saved nil)
@@ -3093,7 +3170,7 @@ left with a small share, and quitting restores the original layout."
         (let ((claude-window (get-buffer-window claude))
               (window-a (get-buffer-window a))
               (window-b (get-buffer-window b)))
-          (should (equal (car (godel-test-layout-names)) "*claude-code[repo/slug]*"))
+          (should (equal (car (godel-test-layout-names)) (buffer-name claude)))
           (should-not (window-parameter claude-window 'window-side))
           (should-not (window-parameter claude-window 'no-delete-other-windows))
           (should (< (window-left-column claude-window) (window-left-column window-a)))
@@ -3109,41 +3186,134 @@ left with a small share, and quitting restores the original layout."
         (set-window-configuration saved)
         (should (equal (godel-test-layout-names) before))))))
 
+;;;; The sidebar's commands in that layout (RET and d)
+
+(defmacro godel-test-with-board-in-sidebar (&rest body)
+  "In `godel-test-with-claude-layout': show the sidebar's board in the sidebar
+window, select it with point on the task, as when RET or d is pressed there.
+Binds `board'.  (`godel-test-with-env' gives each test its own sidebar buffer
+name, so a live sidebar is never touched.)"
+  (declare (indent 0))
+  `(let* ((board (godel-board-buffer t)))
+     (set-window-buffer sidebar board)
+     (set-window-dedicated-p sidebar t)
+     (select-window sidebar)
+     (goto-char (point-min))
+     (while (and (not (eobp))
+                 (not (equal (godel-board--task-id-at-point) (plist-get task :id))))
+       (forward-line 1))
+     (should (equal (godel-board--task-id-at-point) (plist-get task :id)))
+     ,@body))
+
+(defun godel-test-visit (magit-buffer)
+  "Press RET on the task at point, with magit stood in for by MAGIT-BUFFER.
+`magit-status-setup-buffer' shows the status buffer in the selected window, so
+that is what the stand-in does; the sidebar's own refresh is left out."
+  (cl-letf (((symbol-function 'magit-status-setup-buffer)
+             (lambda (_directory) (switch-to-buffer magit-buffer)))
+            ((symbol-function 'godel-sidebar-sync) #'ignore))
+    (godel-board-visit)))
+
+(ert-deftest godel-test-board-visit-keeps-the-layout ()
+  "RET in the sidebar of a workspace that is already sidebar | Claude | magit
+leaves it that way, with Claude selected and at its 60%."
+  (godel-test-with-claude-layout
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (godel-test-with-board-in-sidebar
+      (let ((expected (mapcar #'buffer-name (list board claude magit-buffer))))
+        (should (equal (godel-test-layout-names) expected))
+        (godel-test-visit magit-buffer)
+        (should (equal (godel-test-layout-names) expected))
+        (should (eq (selected-window) (get-buffer-window claude)))
+        (should (godel-test-near-p (window-total-width (get-buffer-window claude))
+                                   (round (* 0.6 (- (godel-test-frame-columns) 12)))))))))
+
+(ert-deftest godel-test-board-visit-in-a-fresh-workspace ()
+  "RET where the main area shows something else and there is no Claude window
+yet: magit takes the main window and Claude opens between it and the sidebar."
+  (godel-test-with-claude-layout
+    (let ((scratch (get-buffer-create (godel-test-unique "*scratch-%s*"))))
+      (switch-to-buffer scratch)
+      (godel-test-with-board-in-sidebar
+        (should-not (get-buffer-window claude))
+        (should (equal (godel-test-layout-names)
+                       (mapcar #'buffer-name (list board scratch))))
+        (godel-test-visit magit-buffer)
+        (should (equal (godel-test-layout-names)
+                       (mapcar #'buffer-name (list board claude magit-buffer))))
+        (should-not (get-buffer-window scratch))
+        (should (eq (selected-window) (get-buffer-window claude)))
+        (should (godel-test-near-p (window-total-width (get-buffer-window claude))
+                                   (round (* 0.6 (- (godel-test-frame-columns) 12)))))))))
+
+(ert-deftest godel-test-board-visit-with-magit-closed ()
+  "RET when magit's window was closed and Claude fills the main area: magit
+takes that window for a moment, and Claude is split back in beside it."
+  (godel-test-with-claude-layout
+    (claude-code-ide--display-buffer-in-side-window claude)
+    (delete-window magit)
+    (godel-test-with-board-in-sidebar
+      (should (equal (godel-test-layout-names) (mapcar #'buffer-name (list board claude))))
+      (godel-test-visit magit-buffer)
+      (should (equal (godel-test-layout-names)
+                     (mapcar #'buffer-name (list board claude magit-buffer))))
+      (should (eq (selected-window) (get-buffer-window claude))))))
+
+(ert-deftest godel-test-board-diff-never-takes-claudes-window ()
+  "d in the sidebar shows the diff beside Claude, not in place of it: in
+magit's window when there is one, otherwise in a split of Claude's own."
+  (dolist (magit-open '(t nil))
+    (godel-test-with-claude-layout
+      (claude-code-ide--display-buffer-in-side-window claude)
+      (unless magit-open (delete-window magit))
+      (godel-test-with-board-in-sidebar
+        (let ((diff (get-buffer-create (godel-test-unique "*diff-%s*")))
+              (windows (length (window-list nil 'no-minibuf))))
+          (cl-letf (((symbol-function 'godel-review-diff)
+                     (lambda (_task) (switch-to-buffer diff))))
+            (godel-board-diff))
+          (should (equal (godel-test-layout-names)
+                         (mapcar #'buffer-name (list board claude diff))))
+          (should (eq (window-buffer (get-buffer-window claude)) claude))
+          (should (eq (selected-window) (get-buffer-window diff)))
+          ;; With magit open the diff took its window; without, it's one more.
+          (should (= (length (window-list nil 'no-minibuf))
+                     (if magit-open windows (1+ windows)))))))))
+
 (ert-deftest godel-test-board-select-content-window ()
   "The diff from the sidebar must never take Claude's window: with magit's
 window gone, Claude's is split and the new half is used.  Visit (non-strict)
 may take Claude's, since it splits it back in afterwards."
-  (save-window-excursion
-    (delete-other-windows)
-    (let* ((claude (get-buffer-create "*claude-code[repo/slug]*"))
-           (side (display-buffer-in-side-window (get-buffer-create "*godel-sidebar*")
-                                                '((side . left) (slot . 1)))))
-      (unwind-protect
-          (progn
-            (switch-to-buffer claude)
-            (let ((claude-window (get-buffer-window claude)))
-              (set-window-dedicated-p claude-window t)
-              (select-window side)
-              ;; Non-strict: Claude's own window, undedicated.
-              (godel-board--select-content-window)
-              (should (eq (selected-window) claude-window))
-              (should-not (window-dedicated-p claude-window))
-              ;; Strict: a new window, not Claude's.
-              (select-window side)
-              (godel-board--select-content-window t)
-              (should-not (eq (selected-window) claude-window))
-              (should (eq (window-buffer claude-window) claude))
-              (should-not (window-dedicated-p (selected-window)))
-              (should-not (window-parameter (selected-window) 'window-side))
-              ;; With a non-Claude window around, strict just uses it.
-              (switch-to-buffer (get-buffer-create "*magit: x*"))
-              (select-window side)
-              (let ((before (length (window-list))))
-                (godel-board--select-content-window t)
-                (should (equal (buffer-name (window-buffer (selected-window))) "*magit: x*"))
-                (should (= (length (window-list)) before)))))
-        (kill-buffer claude)
-        (when-let* ((b (get-buffer "*magit: x*"))) (kill-buffer b))))))
+  (godel-test-killing-new-buffers
+    (save-window-excursion
+      (delete-other-windows)
+      (let* ((claude (get-buffer-create (godel-test-unique "*claude-code[repo%s/slug]*")))
+             (magit (get-buffer-create (godel-test-unique "*magit: %s*")))
+             (side (display-buffer-in-side-window
+                    (get-buffer-create (godel-test-unique "*godel-sidebar-%s*"))
+                    '((side . left) (slot . 1)))))
+        (switch-to-buffer claude)
+        (let ((claude-window (get-buffer-window claude)))
+          (set-window-dedicated-p claude-window t)
+          (select-window side)
+          ;; Non-strict: Claude's own window, undedicated.
+          (godel-board--select-content-window)
+          (should (eq (selected-window) claude-window))
+          (should-not (window-dedicated-p claude-window))
+          ;; Strict: a new window, not Claude's.
+          (select-window side)
+          (godel-board--select-content-window t)
+          (should-not (eq (selected-window) claude-window))
+          (should (eq (window-buffer claude-window) claude))
+          (should-not (window-dedicated-p (selected-window)))
+          (should-not (window-parameter (selected-window) 'window-side))
+          ;; With a non-Claude window around, strict just uses it.
+          (switch-to-buffer magit)
+          (select-window side)
+          (let ((before (length (window-list))))
+            (godel-board--select-content-window t)
+            (should (eq (window-buffer (selected-window)) magit))
+            (should (= (length (window-list)) before))))))))
 
 (ert-deftest godel-test-walkthrough-show-location-beside-claude ()
   "The file opens in the window that isn't Claude, and Claude's window keeps
@@ -3153,11 +3323,12 @@ the conversation."
            (wt (plist-get task :worktree))
            (review (get-buffer-create (godel-agent-buffer-name wt "review")))
            (author (get-buffer-create (godel-agent-buffer-name wt)))
+           (magit (get-buffer-create (godel-test-unique "*magit: %s*")))
            (ctx (list :project-dir wt :buffer review)))
       (unwind-protect
           (save-window-excursion
             (delete-other-windows)
-            (switch-to-buffer (get-buffer-create "*magit: x*"))
+            (switch-to-buffer magit)
             (let ((author-window (split-window (window-main-window) nil 'left))
                   (side (display-buffer-in-side-window review '((side . right)))))
               (set-window-buffer author-window author)
@@ -3172,7 +3343,7 @@ the conversation."
                               (window-buffer (godel-agent-content-window t)))
                              (expand-file-name "app.py" wt)))))
         (when (overlayp godel-reviewer--focus-overlay) (delete-overlay godel-reviewer--focus-overlay))
-        (dolist (b (list review author (get-buffer "*magit: x*"))) (when b (kill-buffer b)))
+        (dolist (b (list review author magit)) (when (buffer-live-p b) (kill-buffer b)))
         (when-let* ((b (get-file-buffer (expand-file-name "app.py" wt)))) (kill-buffer b))))))
 
 (ert-deftest godel-test-review-history ()

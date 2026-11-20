@@ -253,7 +253,7 @@ resumed with its conversation, on the task's model. It takes a couple of
 seconds. The Claude window sits between the sidebar and magit; `SPC c w` toggles its width
 (60% or 40% of the space right of the sidebar). It is an ordinary window, so `SPC w o`
 closes it like any other; `SPC c t` brings it back. While Claude's own edit is shown as a
-diff, Claude gets a third of the frame so the diff has room. Claude sessions outside godel
+diff, Claude gets 30% of the frame (`my/claude-code-ediff-fraction`) so the diff has room. Claude sessions outside godel
 tasks, and the walkthrough, keep the usual right-hand window (`SPC c w` switches those
 between 150 and 100 columns).
 

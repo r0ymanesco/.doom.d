@@ -422,7 +422,8 @@ Launch steps:
    the model the router picked.) The wrapper adds `--model` to a fresh Not
    Diamond launch but not to one that resumes, where it leaves the model to the
    session, so godel passes `--model <Not Diamond value>` itself when it
-   resumes a Not Diamond task (`godel-agent-flags`). Otherwise there would be
+   resumes a Not Diamond task (`godel-agent-flags`; checked on real resumed
+   sessions, `SPIKE.md` §9). Otherwise there would be
    nothing to check, and a task switched from another model to Not Diamond
    would come back on the old one. ghostel's native terminal gives Emacs a
    pipe without a PID, so the process tree starts from `ghostel--pid`.

@@ -235,3 +235,29 @@ longer needs the pin variables (section 8). From the bundled wrapper
 Only Haiku at low effort was tried, and only headless launches. The settings
 `effortLevel` isn't set without a pin, so `--effort` is the only source of
 effort; godel always passes it.
+
+**Resume, on real sessions (2026-11-20).** The check above ran on stand-in
+binaries and synthetic process lists, so it was also run for real. A batch Emacs
+with an empty environment (no pin variable, no API key) built each launch with
+godel's own `godel-models-launch-env` and `godel-agent-flags`, started the real
+`notdiamond-claude` headless (hooks included) in a scratch directory, sampled the
+live process tree with `godel-agent--proc-file` while it ran, and passed every
+sample to `godel-agent-check-launch`. Haiku and Not Diamond sessions were
+created, then resumed, then each resumed on the other model (what `R` does):
+
+| Launch | Pin variable in the tree | `godel-agent-check-launch` | Claude reports | Proxy row |
+|---|---|---|---|---|
+| haiku, fresh | none | ok `haiku` | `claude-haiku-5-5` | `haiku low passthrough` |
+| haiku, resumed | none | ok `haiku` | `claude-haiku-5-5` | `haiku low passthrough` |
+| Not Diamond, fresh | none | ok `notdiamond[1m]` | `notdiamond[1m]` | `chat / trivial` (routed) |
+| Not Diamond, resumed (`--model notdiamond[1m]`) | none | ok `notdiamond[1m]` | `notdiamond[1m]` | `server / trivial` (routed) |
+| haiku session, resumed on Not Diamond | none | ok `notdiamond[1m]` | `notdiamond[1m]` | `server / trivial` (routed) |
+| Not Diamond session, resumed on haiku | none | ok `haiku` | `claude-haiku-5-5` | `haiku low passthrough` |
+
+So the wrapper doesn't export a pin variable to its children when given
+`--model`, a fixed-model resume passes the check, and a Not Diamond resume with
+an explicit `--model notdiamond[1m]` is still routed. The notice "Using the
+--model you passed instead of Not Diamond" appears on those resumes and changes
+nothing. Each run took 3 to 4 processes (wrapper, Claude, hook scripts). Not
+done: an interactive session in godel's ghostel terminal; headless runs share
+the wrapper's launch code but not the terminal.

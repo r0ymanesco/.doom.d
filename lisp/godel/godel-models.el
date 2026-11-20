@@ -74,8 +74,8 @@ Each entry is a plist with :value, :name, :description, :efforts and
 
 (defcustom godel-default-effort "medium"
   "Effort for new tasks and reviewers, on any model.
-Not Diamond gets it as --effort only, never as a pin variable; for now the
-router still picks the effort for each turn itself."
+Every model gets it as --effort.  For Not Diamond that is only a starting
+point: for now the router still picks the effort for each turn itself."
   :group 'godel
   :type 'string)
 

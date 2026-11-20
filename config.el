@@ -570,7 +570,9 @@ This must run BEFORE LSP starts so executable-find works correctly."
 
 
 ;; Claude code
-;; Layout of a godel task's workspace: treemacs | godel sidebar | Claude | magit.
+;; Layout of a godel task's workspace, left to right: the left side windows
+;; (Treemacs and the godel sidebar, in slots of their own, so they stack
+;; vertically), Claude, then magit.
 ;; Side windows on the same side stack vertically, so Claude can't be a side
 ;; window next to the sidebar.  A task's main Claude session (`*claude-code[REPO/SLUG]*')
 ;; is instead split off the left edge of the main window area, just right of the
@@ -585,6 +587,10 @@ This must run BEFORE LSP starts so executable-find works correctly."
 ;; edits.  Before that, claude-code-ide deletes the side windows, and after
 ;; ediff starts it shows Claude again, which lands here (with a smaller share, so
 ;; the diff gets most of the frame); quitting restores the saved layout.
+;; This is a deliberate trade, not an oversight: as a side window Claude used to
+;; survive `SPC w o', and giving this window `no-delete-other-windows' would
+;; bring that back, but then ediff's own `delete-other-windows' would keep it at
+;; its full 60% and squeeze the diff panes.
 ;;
 ;; This hooks claude-code-ide's display function with
 ;; `display-buffer-overriding-action' rather than a `display-buffer-alist'
@@ -698,14 +704,26 @@ fixed widths instead (`my/claude-code-side-widths')."
           (if first (cadr my/claude-code-fractions) (car my/claude-code-fractions))
           claude-code-ide-window-width
           (if first (cadr my/claude-code-side-widths) (car my/claude-code-side-widths))))
-  (dolist (win (window-list))
-    (cond ((my/claude-code-main-session-window-p win)
-           (my/claude-code-fit-window win))
-          ((my/claude-code-side-session-window-p win)
-           (let ((delta (- claude-code-ide-window-width (window-body-width win))))
-             (when (window-resizable-p win delta t)
-               (window-resize win delta t))))))
-  (message "Claude Code width: %d%%" (round (* 100 my/claude-code-main-fraction))))
+  (let (main side)
+    (dolist (win (window-list))
+      (cond ((my/claude-code-main-session-window-p win)
+             (setq main t)
+             (my/claude-code-fit-window win))
+            ((my/claude-code-side-session-window-p win)
+             (setq side t)
+             (let ((delta (- claude-code-ide-window-width (window-body-width win))))
+               (when (window-resizable-p win delta t)
+                 (window-resize win delta t))))))
+    ;; Say what was resized: a share for task sessions, columns for side windows
+    ;; (both when both are showing, or when none is: the setting still changed).
+    (message "Claude Code width: %s"
+             (string-join
+              (delq nil
+                    (list (when (or main (not side))
+                            (format "%d%%" (round (* 100 my/claude-code-main-fraction))))
+                          (when (or side (not main))
+                            (format "%d columns" claude-code-ide-window-width))))
+              " / "))))
 
 (use-package! claude-code-ide
   :config
