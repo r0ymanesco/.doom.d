@@ -425,8 +425,12 @@ Launch steps:
    variable in any process's environment and Claude must have been given
    `--model notdiamond…`; pinned sessions must have `--model <value>`. (The
    transcript can't be used: a routed turn records the model the router
-   picked.) ghostel's native terminal gives Emacs a pipe without a PID, so
-   the process tree starts from `ghostel--pid`.
+   picked.) The notdiamond wrapper adds `--model` to fresh and pinned
+   launches but not to an unpinned one that resumes, so godel passes
+   `--model <Not Diamond value>` itself when it resumes a Not Diamond task
+   (`godel-agent-flags`); otherwise there is nothing to check. ghostel's
+   native terminal gives Emacs a pipe without a PID, so the process tree
+   starts from `ghostel--pid`.
 5. Wait for the input box on screen, then send the prompt
    (`claude-code-ide-send-prompt`; multi-line prompts arrive whole).
 

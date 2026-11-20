@@ -119,12 +119,23 @@ side.)"
 
 (defun godel-agent-flags (task launch &optional resume)
   "CLI flags (one string) for TASK with LAUNCH from `godel-models-launch-env'.
-With RESUME, resume the task's session instead of starting it."
+With RESUME, resume the task's session instead of starting it.
+
+A resumed Not Diamond session is given --model explicitly.  The wrapper
+adds `--model notdiamond...' to a fresh launch, and to a pinned one, but
+not to an unpinned launch that resumes: it leaves the model to the
+session.  Then nothing says which model a resumed session is on, so
+`godel-agent-check-launch' can't tell (it reported \"couldn't find
+Claude's --model\"), and a task switched from a pinned model to Not
+Diamond would come back on the old model."
   (mapconcat #'shell-quote-argument
              (append (if resume
                          (list "--resume" (plist-get task :session-id))
                        (list "--session-id" (plist-get task :session-id)))
                      (list "--settings" (godel-agent-hooks-json))
+                     (when-let* (((and resume (not (plist-get launch :pinned))))
+                                 (model (plist-get task :model)))
+                       (list "--model" model))
                      (plist-get launch :args)
                      (when-let* ((mode (plist-get task :permission-mode)))
                        (list "--permission-mode" mode)))

@@ -242,6 +242,20 @@ also keeps a failure from printing the whole environment, keys and all."
       (should (equal (cadr (member "--resume" resume)) "abc"))
       (should-not (member "--session-id" resume)))))
 
+(ert-deftest godel-test-agent-flags-resume-names-the-router ()
+  "The wrapper adds no --model to an unpinned resume, so godel passes it.
+Without it a resumed Not Diamond session has no --model for
+`godel-agent-check-launch' to find."
+  (let ((task '(:session-id "abc" :model "notdiamond[1m]")))
+    (cl-flet ((flags (launch resume)
+                (split-string-shell-command (godel-agent-flags task launch resume))))
+      ;; Router, resumed: explicit.  Fresh: the wrapper adds it itself.
+      (should (equal (cadr (member "--model" (flags '(:args ("--effort" "low")) t)))
+                     "notdiamond[1m]"))
+      (should-not (member "--model" (flags '(:args ("--effort" "low")) nil)))
+      ;; Pinned: the wrapper adds the pinned --model, on a resume too.
+      (should-not (member "--model" (flags '(:args ("--effort" "low") :pinned t) t))))))
+
 (ert-deftest godel-test-buffer-name ()
   (godel-test-with-env
     (let* ((repo (godel-test-repo (expand-file-name "myrepo" tmp)))
