@@ -235,9 +235,10 @@ repo it asks whether to trust the folder; godel asks you in the minibuffer
 ("Trust <repo> for Claude?") and answers for you.
 
 **The model list** comes from Claude itself and refreshes when Claude Code
-or notdiamond update. `SPC G M` refreshes it by hand. If the mechanism that
-pins a model stops working, godel warns once and fixed models can't be
-picked; Not Diamond keeps working.
+or notdiamond update. `SPC G M` refreshes it by hand. A model other than
+Not Diamond is chosen with `--model`; each session is checked against the
+choice when it starts, so a wrapper that stopped honouring it shows up as
+"model mismatch" (see Troubleshooting).
 
 **Importing a worktree** (`i` on the board, `SPC G i`): turns an existing
 worktree of the repo into a task. godel lists the ones that aren't tasks
@@ -542,8 +543,11 @@ repo (not from the board).
 **A task shows "model mismatch".** Its session started on a different model
 than the task's and was stopped before your prompt was sent. The row says
 what it started on. `R` restarts it (and lets you pick again). If it keeps
-happening with fixed models, `SPC G M` re-checks the model pin; a warning
-means the notdiamond wrapper changed and only Not Diamond works for now.
+happening with fixed models, the notdiamond wrapper may have changed how it
+handles `--model`, or Emacs's environment may set one of its pin variables
+(`NOTDIAMOND_RESEARCH_MODEL_PIN`, `NOTDIAMOND_RESEARCH_EFFORT_PIN`,
+`NOTDIAMOND_ROUTING`; godel removes them from its launches and warns at
+startup if Emacs has them). Not Diamond tasks are unaffected.
 
 **A task is "stopped" after restarting Emacs.** Expected: sessions run inside
 Emacs. Open the task (`RET`) to resume it.
@@ -584,7 +588,7 @@ the Claude session in `*claude-code[<repo>/<slug>]*`.
 | `SPC G n` | New task |
 | `SPC G o` | Toggle the sidebar |
 | `SPC G i` | Import an existing worktree as a task |
-| `SPC G M` | Refresh the model list (and re-check the model pin) |
+| `SPC G M` | Refresh the model list |
 | `SPC G c` | Comment on the line or selection (in a task's diff or files) |
 | `SPC G x` | Delete the comment on the line (in a task's diff or files) |
 | `SPC G v` | Review menu (in a task's diff or files) |

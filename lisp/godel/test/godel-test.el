@@ -136,20 +136,30 @@
       (should-not (godel-test-env-value (plist-get launch :env) var))
       (should-not (cl-some (lambda (e) (string-prefix-p (concat var "=") e))
                            (plist-get launch :env))))
+    ;; The router needs no --model: the wrapper starts it there.
     (should (equal (plist-get launch :args) '("--effort" "high")))
-    (should (null (plist-get launch :pinned)))
     (should (equal (plist-get launch :expect) "notdiamond[1m]"))
     (should (equal (godel-test-env-value (plist-get launch :env) "PATH") "/usr/bin:/bin"))))
 
-(ert-deftest godel-test-launch-env-pinned ()
+(ert-deftest godel-test-launch-env-names-the-model ()
+  "Any other model is chosen with --model; no pin variable is set or inherited."
   (let* ((launch (godel-models-launch-env godel-test-sonnet "high" godel-test-inherited))
          (env (plist-get launch :env)))
-    (should (equal (godel-test-env-value env "NOTDIAMOND_RESEARCH_MODEL_PIN") "sonnet"))
-    (should (equal (godel-test-env-value env "NOTDIAMOND_RESEARCH_EFFORT_PIN") "high"))
-    (should (equal (godel-test-env-value env "NOTDIAMOND_ROUTING") "off"))
-    (should (equal (plist-get launch :args) '("--effort" "high")))
-    (should (plist-get launch :pinned))
-    (should (equal (plist-get launch :expect) "claude-sonnet-5-5"))))
+    (should (equal (plist-get launch :args) '("--model" "sonnet" "--effort" "high")))
+    (should (equal (plist-get launch :expect) "claude-sonnet-5-5"))
+    ;; The wrapper drops --model when a pin is set, so none may get through:
+    ;; neither godel's own nor one Emacs inherited (godel-test-inherited has all).
+    (dolist (var godel-scrubbed-variables)
+      (should-not (godel-test-env-value env var))
+      (should-not (cl-some (lambda (e) (string-prefix-p (concat var "=") e)) env))))
+  ;; Without an effort there is no --effort, but still the model.
+  (should (equal (plist-get (godel-models-launch-env godel-test-sonnet nil godel-test-inherited)
+                            :args)
+                 '("--model" "sonnet")))
+  ;; A malformed effort fails here, before anything is started, for every model.
+  (dolist (entry (list godel-test-router godel-test-sonnet))
+    (should-error (godel-models-launch-env entry 5 godel-test-inherited)
+                  :type 'wrong-type-argument)))
 
 (ert-deftest godel-test-default-effort-is-medium ()
   (should (equal (eval (car (get 'godel-default-effort 'standard-value))) "medium")))
@@ -187,19 +197,15 @@ also keeps a failure from printing the whole environment, keys and all."
                 lines)))
 
 (ert-deftest godel-test-launch-env-child-process ()
-  "A real child process: Not Diamond sees no pins even if Emacs has them."
-  (let* ((inherited (append godel-test-inherited process-environment))
-         (router (godel-test-child-env
-                  (plist-get (godel-models-launch-env godel-test-router "high" inherited) :env)))
-         (pinned (godel-test-child-env
-                  (plist-get (godel-models-launch-env godel-test-sonnet "low" inherited) :env))))
-    (should-not (godel-test-leaks router))
-    ;; The API key never reaches a child, pinned or not: a headless launch
-    ;; would use it without asking and bypass the forwarded login.
-    (should-not (godel-test-leaks pinned '("ANTHROPIC_API_KEY")))
-    (should (member "NOTDIAMOND_RESEARCH_MODEL_PIN=sonnet" pinned))
-    (should (member "NOTDIAMOND_RESEARCH_EFFORT_PIN=low" pinned))
-    (should (member "NOTDIAMOND_ROUTING=off" pinned))))
+  "A real child process sees no pin and no API key, whatever the model.
+That holds even if Emacs has them: a pin would make the wrapper ignore --model,
+and a headless launch would use the key without asking and bypass the
+forwarded login."
+  (let ((inherited (append godel-test-inherited process-environment)))
+    (dolist (entry (list godel-test-router godel-test-sonnet))
+      (let ((child (godel-test-child-env
+                    (plist-get (godel-models-launch-env entry "high" inherited) :env))))
+        (should-not (godel-test-leaks child))))))
 
 (ert-deftest godel-test-parse-initialize ()
   (let* ((output (concat
@@ -242,19 +248,24 @@ also keeps a failure from printing the whole environment, keys and all."
       (should (equal (cadr (member "--resume" resume)) "abc"))
       (should-not (member "--session-id" resume)))))
 
-(ert-deftest godel-test-agent-flags-resume-names-the-router ()
-  "The wrapper adds no --model to an unpinned resume, so godel passes it.
-Without it a resumed Not Diamond session has no --model for
-`godel-agent-check-launch' to find."
-  (let ((task '(:session-id "abc" :model "notdiamond[1m]")))
-    (cl-flet ((flags (launch resume)
-                (split-string-shell-command (godel-agent-flags task launch resume))))
-      ;; Router, resumed: explicit.  Fresh: the wrapper adds it itself.
-      (should (equal (cadr (member "--model" (flags '(:args ("--effort" "low")) t)))
-                     "notdiamond[1m]"))
-      (should-not (member "--model" (flags '(:args ("--effort" "low")) nil)))
-      ;; Pinned: the wrapper adds the pinned --model, on a resume too.
-      (should-not (member "--model" (flags '(:args ("--effort" "low") :pinned t) t))))))
+(ert-deftest godel-test-agent-flags-resume-names-the-model ()
+  "A resumed session is always started with the task's --model, exactly once.
+The wrapper adds none to a Not Diamond resume, so godel passes it; without it
+`godel-agent-check-launch' has no --model to find, and a task switched from
+another model to Not Diamond would come back on the old one.  Any other model
+already has its --model in the launch args, which must not be doubled."
+  (cl-flet ((models (task entry resume)
+              (let ((flags (split-string-shell-command
+                            (godel-agent-flags task (godel-models-launch-env entry "low") resume))))
+                (cl-loop for (a b) on flags when (equal a "--model") collect b))))
+    (let ((router-task '(:session-id "abc" :model "notdiamond[1m]"))
+          (sonnet-task '(:session-id "abc" :model "sonnet")))
+      ;; Not Diamond: explicit on a resume, the wrapper's job when fresh.
+      (should (equal (models router-task godel-test-router t) '("notdiamond[1m]")))
+      (should (null (models router-task godel-test-router nil)))
+      ;; Anything else: once, fresh or resumed.
+      (should (equal (models sonnet-task godel-test-sonnet nil) '("sonnet")))
+      (should (equal (models sonnet-task godel-test-sonnet t) '("sonnet"))))))
 
 (ert-deftest godel-test-buffer-name ()
   (godel-test-with-env
@@ -384,16 +395,26 @@ Without it a resumed Not Diamond session has no --model for
 (ert-deftest godel-test-check-launch ()
   (let ((wrapper '(("node" "notdiamond" "claude") . ("PATH=/bin")))
         (claude-router '(("claude" "--settings" "{}" "--model" "notdiamond[1m]") . ("PATH=/bin")))
-        (claude-sonnet '(("claude" "--model" "sonnet" "--effort" "low") . ("NOTDIAMOND_ROUTING=off"))))
+        (claude-sonnet '(("claude" "--model" "sonnet" "--effort" "low") . ("PATH=/bin"))))
     (should (car (godel-agent-check-launch (list wrapper claude-router) godel-test-router)))
-    ;; A pin anywhere in the tree fails a Not Diamond session.
-    (should-not (car (godel-agent-check-launch
-                      (list (cons (car wrapper) '("NOTDIAMOND_RESEARCH_MODEL_PIN=opus")) claude-router)
-                      godel-test-router)))
-    (should-not (car (godel-agent-check-launch (list wrapper claude-sonnet) godel-test-router)))
     (should (car (godel-agent-check-launch (list wrapper claude-sonnet) godel-test-sonnet)))
+    ;; The wrong model either way round.
+    (should-not (car (godel-agent-check-launch (list wrapper claude-sonnet) godel-test-router)))
     (should-not (car (godel-agent-check-launch (list wrapper claude-router) godel-test-sonnet)))
-    (should-not (car (godel-agent-check-launch (list wrapper) godel-test-router)))))
+    ;; No --model at all.
+    (should-not (car (godel-agent-check-launch (list wrapper) godel-test-router)))
+    (should-not (car (godel-agent-check-launch (list wrapper) godel-test-sonnet)))
+    ;; A pin anywhere in the tree fails any session, even one whose --model is
+    ;; right: with a pin the wrapper would have dropped godel's --model.
+    (dolist (pin '("NOTDIAMOND_RESEARCH_MODEL_PIN=opus" "NOTDIAMOND_RESEARCH_EFFORT_PIN=max"
+                   "NOTDIAMOND_ROUTING=off"))
+      (let ((pinned (cons (car wrapper) (list pin))))
+        (should-not (car (godel-agent-check-launch (list pinned claude-router) godel-test-router)))
+        (should-not (car (godel-agent-check-launch (list pinned claude-sonnet) godel-test-sonnet)))))
+    (should (string-match-p "pin variable" (cdr (godel-agent-check-launch
+                                                  (list (cons (car wrapper) '("NOTDIAMOND_ROUTING=off"))
+                                                        claude-sonnet)
+                                                  godel-test-sonnet))))))
 
 (ert-deftest godel-test-same-model ()
   (should (godel-status-same-model-p "claude-sonnet-5-5[1m]" "claude-sonnet-5-5"))
@@ -435,74 +456,6 @@ Without it a resumed Not Diamond session has no --model for
       (should (godel-test-wait (lambda () (not (eq result 'pending)))))
       (should (eq result t))
       (should-not (file-exists-p env-log)))))
-
-(ert-deftest godel-test-pin-check-result ()
-  (should (eq (car (godel-models--check-result '("--settings" "{}" "--model" "haiku")
-                                               '("--model" "notdiamond[1m]") "haiku"))
-              'ok))
-  (should (eq (car (godel-models--check-result '("--model" "notdiamond[1m]")
-                                               '("--model" "notdiamond[1m]") "haiku"))
-              'broken))
-  (should (eq (car (godel-models--check-result '("--model" "haiku") '("--settings" "{}") "haiku"))
-              'broken))
-  (should (eq (car (godel-models--check-result nil '("--model" "notdiamond[1m]") "haiku"))
-              'unknown)))
-
-(defun godel-test-fake-wrapper (dir honour-pin)
-  "Write fake notdiamond and notdiamond-claude programs into DIR.
-The fake wrapper starts claudeBinaryPath from $NOTDIAMOND_CONFIG with
---model set like the real one (or ignoring the pin unless HONOUR-PIN)."
-  (let ((nd (expand-file-name "notdiamond" dir))
-        (wrapper (expand-file-name "notdiamond-claude" dir)))
-    (with-temp-file nd
-      (insert "#!/bin/sh\n[ \"$1\" = status ] && echo '{\"ok\":true}'\nexit 0\n"))
-    (with-temp-file wrapper
-      (insert "#!/bin/sh\n"
-              "bin=$(python3 -I -c 'import json,os,sys;print(json.load(open(os.environ[\"NOTDIAMOND_CONFIG\"]))[\"claudeBinaryPath\"])')\n"
-              "model='notdiamond[1m]'\n"
-              (if honour-pin "[ -n \"$NOTDIAMOND_RESEARCH_MODEL_PIN\" ] && model=$NOTDIAMOND_RESEARCH_MODEL_PIN\n" "")
-              "exec \"$bin\" --settings '{}' --model \"$model\"\n"))
-    (set-file-modes nd #o755)
-    (set-file-modes wrapper #o755)
-    (cons nd wrapper)))
-
-(defmacro godel-test-with-fake-wrapper (honour-pin &rest body)
-  (declare (indent 1))
-  `(godel-test-with-env
-     (let* ((fakes (godel-test-fake-wrapper tmp ,honour-pin))
-            (godel-notdiamond-program (car fakes))
-            (godel-claude-program (cdr fakes))
-            (godel-claude-binary "/bin/true")
-            (source (expand-file-name "nd-config.json" tmp))
-            (process-environment (cons (concat "NOTDIAMOND_CONFIG=" source) process-environment))
-            (godel-models-pin-status nil)
-            (result nil))
-       (with-temp-file source (insert "{\"server\":{\"port\":8082},\"credential\":{\"apiKey\":null}}"))
-       ,@body)))
-
-(ert-deftest godel-test-pin-check-ok ()
-  (godel-test-with-fake-wrapper t
-    (godel-models-check-pin (lambda (status) (setq result status)))
-    (should (godel-test-wait (lambda () result) 20))
-    (should (eq (car result) 'ok))
-    (should-not (godel-models-pin-broken-p))))
-
-(ert-deftest godel-test-pin-check-broken ()
-  (godel-test-with-fake-wrapper nil
-    (cl-letf (((symbol-function 'display-warning) #'ignore))
-      (godel-models-check-pin (lambda (status) (setq result status)))
-      (should (godel-test-wait (lambda () result) 20)))
-    (should (eq (car result) 'broken))
-    (should (godel-models-pin-broken-p))
-    ;; Pinned models are unavailable in the picker; Not Diamond isn't.
-    (should (godel-new--unavailable-p godel-test-sonnet))
-    (should-not (godel-new--unavailable-p godel-test-router))
-    (should (string-match-p "unavailable" (godel-new--model-label godel-test-sonnet)))
-    ;; And a pinned task isn't launched.
-    (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
-           (task (godel-task-create :title "p" :repo repo :base "main" :model "sonnet")))
-      (should-error (godel-agent-start task) :type 'user-error)
-      (should (eq (plist-get (godel-task-get (plist-get task :id)) :state) 'stopped)))))
 
 (ert-deftest godel-test-proxy-check-direct ()
   "The proxy is asked directly; the CLI only runs if that fails."
@@ -917,14 +870,45 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (dolist (var godel-pin-variables)
           (should-not (godel-test-env-value env var)))
         (should (equal (plist-get (godel-task-get id) :expect-model) "notdiamond[1m]"))
-        (should-not (plist-get (godel-task-get id) :pinned))
+        ;; Fresh: the wrapper starts Not Diamond on the router itself.
+        (should-not (member "--model" flags))
         ;; The task's own effort.
         (godel-task-update id :effort "max")
         (godel-agent--launch (godel-task-get id) t)
         (should (equal (cadr (member "--effort" flags)) "max"))
         (should (member "--resume" flags))
+        ;; Resumed: the wrapper adds nothing, so godel names the router.
+        (should (equal (cadr (member "--model" flags)) "notdiamond[1m]"))
         (dolist (var godel-pin-variables)
           (should-not (godel-test-env-value env var)))))))
+
+(ert-deftest godel-test-launch-fixed-model-passes-model ()
+  "Any other model starts with --model and --effort, and no pin variable.
+Not even one Emacs inherited: the wrapper would drop --model for it."
+  (godel-test-with-env
+    (let* ((task (godel-test-started-task tmp 'idle))
+           (id (plist-get task :id))
+           (process-environment (append godel-test-inherited process-environment))
+           flags env)
+      (require 'claude-code-ide)
+      (godel-task-update id :model "sonnet" :effort "low")
+      (cl-letf (((symbol-function 'godel-agent--server-socket) (lambda () "/tmp/godel-test.sock"))
+                ((symbol-function 'godel-agent--watch-trust) #'ignore)
+                ((symbol-function 'claude-code-ide)
+                 (lambda ()
+                   (setq flags (split-string-shell-command claude-code-ide-cli-extra-flags)
+                         env process-environment))))
+        (dolist (resume '(nil t))
+          (godel-agent--launch (godel-task-get id) resume)
+          ;; Once, whether fresh or resumed.
+          (should (equal (cl-loop for (a b) on flags when (equal a "--model") collect b)
+                         '("sonnet")))
+          (should (equal (cadr (member "--effort" flags)) "low"))
+          (should (eq (and (member "--resume" flags) t) resume))
+          (should (equal (plist-get (godel-task-get id) :expect-model) "claude-sonnet-5-5"))
+          (dolist (var godel-scrubbed-variables)
+            (should-not (godel-test-env-value env var))
+            (should-not (cl-some (lambda (e) (string-prefix-p (concat var "=") e)) env))))))))
 
 (ert-deftest godel-test-no-launch-when-session-live ()
   "Even if a start gets through, it never launches over a live session."
@@ -1240,7 +1224,7 @@ instance-name prompt bug): it waits for the first and gets its buffer."
                    (setq badge-seen (godel-board--review-badge (godel-task-get id)))
                    (funcall on-exit 0 godel-test-reviewer-output))))
         (godel-reviewer-run (godel-task-get id)))
-      ;; Streamed, read-only, headless, no session saved, no pins for Not
+      ;; Streamed, read-only, headless, no session saved, no --model for Not
       ;; Diamond (only --effort), no godel hooks.
       (should (member "stream-json" (plist-get ran :args)))
       (should (member "--no-session-persistence" (plist-get ran :args)))
@@ -1359,7 +1343,8 @@ instance-name prompt bug): it waits for the first and gets its buffer."
         (should (member "-p" args))
         (should (member "--no-session-persistence" args))
         (should (member "Edit,Write,MultiEdit,NotebookEdit,Bash" args))
-        ;; The author's own model and effort: pinned Sonnet at low.
+        ;; The author's own model and effort: Sonnet at low.
+        (should (equal (cadr (member "--model" args)) "sonnet"))
         (should (equal (cadr (member "--effort" args)) "low"))
         (should-not (member "--settings" args)))
       (should (equal (plist-get ran :dir) (plist-get task :worktree)))
@@ -1367,8 +1352,10 @@ instance-name prompt bug): it waits for the first and gets its buffer."
       (should (string-match-p "## Tested" (plist-get ran :input)))
       ;; Never reports as the task.
       (should (equal (car (plist-get ran :env)) "GODEL_SERVER"))
-      (should (equal (godel-test-env-value (plist-get ran :env) "NOTDIAMOND_RESEARCH_MODEL_PIN")
-                     "sonnet"))
+      ;; The model goes by --model; no pin variable (it would make the wrapper
+      ;; drop that flag).
+      (should-not (godel-test-leaks (godel-test-child-env (plist-get ran :env))
+                                    godel-pin-variables))
       (should (equal result (list godel-test-briefing nil)))
       (should-not (gethash id godel-reviewer--briefing-runs)))))
 
@@ -1621,7 +1608,7 @@ only the wrapper orphans `claude', which keeps running and spending tokens
   "A failure setting up the briefing, before any process starts, fails the review
 too, instead of leaving it marked as running and refusing every later `v r'."
   (godel-test-with-env
-    (let* (;; A malformed stored effort on a pinned author: the briefing's own
+    (let* (;; A malformed stored effort on the author: the briefing's own
            ;; launch setup signals before it starts anything.
            (task (godel-test-briefed-task tmp :model "sonnet" :effort 5))
            (id (plist-get task :id))

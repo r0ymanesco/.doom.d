@@ -121,7 +121,7 @@ for them can't arrive.  Reviewable states are kept."
         (unless (server-running-p server-name) (server-start))
         (when-let* ((pins (godel-models-inherited-pins)))
           (display-warning 'godel
-                           (format "Emacs's environment sets %s.  godel removes them for Not Diamond launches, but other tools launched from Emacs will inherit them."
+                           (format "Emacs's environment sets %s.  godel removes them from every launch, because they would override the model it chooses, but other tools launched from Emacs will inherit them."
                                    (string-join pins ", "))))
         (setq godel--saved-buffer-name-function
               (bound-and-true-p claude-code-ide-buffer-name-function))

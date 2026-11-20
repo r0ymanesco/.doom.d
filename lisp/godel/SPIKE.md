@@ -191,3 +191,47 @@ was still running. Proxy log during the test:
 The Not Diamond session was routed normally. Routing off applies only to the
 pinned session's own launch; the shared proxy's environment (checked through
 `/proc`) has no pin or routing variables.
+
+## 9. Follow-up, 2026-11-20: `--model` replaces the pin
+
+notdiamond 0.2.17-rc.8 accepts `--model` for a specific model, so godel no
+longer needs the pin variables (section 8). From the bundled wrapper
+(`dist/main.js`) and runs against the real wrapper, the proxy and Claude:
+
+- **Wrapper.** It adds `--model <Not Diamond>` itself unless the arguments
+  already have a `--model`, and then prints "Using the --model you passed
+  instead of Not Diamond (switch back with /model)". On a resume
+  (`--resume`, `--continue`) it adds none, unless a pin is set. The README
+  says the same: "Pass `--model` to start on another model instead".
+- **Pin and `--model` don't combine.** With the pin set, the wrapper
+  *strips* the `--model` it's given ("Ignoring --model: this session runs X
+  at E effort") and writes `model` and `effortLevel` into the settings it
+  passes. So a pin variable inherited from Emacs's environment would override
+  godel's choice, and godel removes them from every launch.
+- **Proxy.** The router's decision function treats a request whose model isn't
+  Not Diamond as client-selected and returns it as named, source
+  `passthrough`. It never reads the pin variables; `NOTDIAMOND_ROUTING=off`
+  only matters in the proxy's own environment (section 8).
+- **Arguments** (stand-in binary, no model call, empty environment), `--effort
+  low` throughout:
+
+| Launch | `--model` Claude gets | `model` in the settings |
+|---|---|---|
+| pin `haiku`, fresh | `haiku` | `haiku` |
+| pin `haiku`, `--resume` | `haiku` | `haiku` |
+| none (router), fresh | `notdiamond[1m]` | `notdiamond[1m]` |
+| none (router), `--resume` | none | `notdiamond[1m]` |
+| `--model haiku`, fresh | `haiku` | `notdiamond[1m]` |
+| `--model haiku`, `--resume` | `haiku` | `notdiamond[1m]` |
+
+  The settings still name Not Diamond when `--model` is given; the command
+  line wins.
+- **Real requests** ("reply ok", Haiku, low effort, headless, no pin variable,
+  no `ANTHROPIC_API_KEY`), one with `--model haiku` and one with the three pin
+  variables: both reported `claude-haiku-5-5` and `apiKeySource` `none`, and
+  the proxy log has the same row for each, `claude-haiku-5-5  low
+  passthrough  4tok`.
+
+Only Haiku at low effort was tried, and only headless launches. The settings
+`effortLevel` isn't set without a pin, so `--effort` is the only source of
+effort; godel always passes it.
