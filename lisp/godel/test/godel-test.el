@@ -394,6 +394,44 @@ already has its --model in the launch args, which must not be doubled."
       (should (equal oks '(t)))
       (should (plist-get (godel-task-get (plist-get task :id)) :model-check-pending)))))
 
+(ert-deftest godel-test-hook-ignores-background-sessions ()
+  "A session in Claude's background daemon doesn't report to godel.
+When a session moves to the background, Claude starts two more in the task's
+worktree (the moved session's fork, and a spare).  They inherit GODEL_SERVER
+and the hooks, so godel took the spare's model for the task's, reported
+\"started on notdiamond[1m], expected claude-opus-5-5\" and stopped the real
+session.  Only the hook can tell them apart: it finds the task by cwd."
+  (godel-test-with-env
+    (let* ((bin (expand-file-name "bin" tmp))
+           (calls (expand-file-name "calls" tmp))
+           (client (expand-file-name "emacsclient" bin)))
+      (make-directory bin t)
+      (with-temp-file client
+        (insert "#!/bin/sh\necho \"$@\" >> " calls "\n"))
+      (set-file-modes client #o755)
+      (cl-flet ((run (&optional kind)
+                  (let ((process-environment
+                         (append (and kind (list (concat "CLAUDE_CODE_SESSION_KIND=" kind)))
+                                 (list (concat "PATH=" bin ":" (getenv "PATH"))
+                                       "GODEL_SERVER=/nonexistent")
+                                 (cl-remove-if (lambda (e)
+                                                 (string-match-p "\\`\\(CLAUDE_CODE_SESSION_KIND\\|PATH\\|GODEL_SERVER\\)=" e))
+                                               process-environment))))
+                    (with-temp-buffer
+                      (insert "{}")
+                      (call-process-region (point-min) (point-max) godel-hook-program
+                                           nil nil nil "SessionStart")))))
+        ;; A session in godel's terminal reports.
+        (run)
+        (should (file-exists-p calls))
+        (delete-file calls)
+        (run "interactive")
+        (should (file-exists-p calls))
+        (delete-file calls)
+        ;; One in the daemon doesn't.
+        (run "bg")
+        (should-not (file-exists-p calls))))))
+
 (ert-deftest godel-test-check-launch ()
   (let ((wrapper '(("node" "notdiamond" "claude") . ("PATH=/bin")))
         (claude-router '(("claude" "--settings" "{}" "--model" "notdiamond[1m]") . ("PATH=/bin")))

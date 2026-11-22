@@ -6,6 +6,14 @@
 # disturbs Claude.
 event=$1
 [ -n "$GODEL_SERVER" ] || exit 0
+# A session Claude runs in its background daemon is not the task's session:
+# not the one godel started in its terminal, and not one godel can drive or
+# check.  Claude starts several in the task's worktree when a session moves
+# to the background (the moved session's fork, and a spare it keeps warm), and
+# they inherit GODEL_SERVER and these hooks from the session that started the
+# daemon.  Reporting them made godel take their model for the task's and stop
+# the real session.  Daemon-hosted processes all have this variable.
+[ "$CLAUDE_CODE_SESSION_KIND" = bg ] && exit 0
 payload=$(base64 -w0)
 emacsclient -s "$GODEL_SERVER" -n \
   --eval "(godel-status-event \"$event\" \"$payload\")" >/dev/null 2>&1

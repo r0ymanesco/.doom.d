@@ -176,6 +176,17 @@ report back. `bin/godel-hook EVENT` reads the hook JSON on stdin and calls
 `emacsclient -n --eval '(godel-status-event ...)'`. The task is found from
 `cwd`, since each worktree belongs to exactly one task.
 
+Only sessions in godel's own terminal report. Claude can also run a session in
+its background daemon (`/background`, or when it hands a session off), and it
+starts more sessions in the same worktree to do that: a fork of the session,
+and a spare it keeps warm. They inherit `GODEL_SERVER` and the hooks from the
+session that started the daemon, and they are not the task's session (not in
+godel's terminal, so godel can't drive them or look at their processes). A
+hook whose `CLAUDE_CODE_SESSION_KIND` is `bg` is one of them, and
+`bin/godel-hook` drops it. Without that, the spare's `SessionStart` (the
+router's model, since it has no `--model`) was taken for the task's and the
+real session was stopped as a model mismatch.
+
 | Hook | Task state and data used |
 |---|---|
 | `SessionStart` | check `session_id`; record `transcript_path`; starting `model` |
