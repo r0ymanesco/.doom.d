@@ -176,16 +176,32 @@ report back. `bin/godel-hook EVENT` reads the hook JSON on stdin and calls
 `emacsclient -n --eval '(godel-status-event ...)'`. The task is found from
 `cwd`, since each worktree belongs to exactly one task.
 
-Only sessions in godel's own terminal report. Claude can also run a session in
-its background daemon (`/background`, or when it hands a session off), and it
-starts more sessions in the same worktree to do that: a fork of the session,
-and a spare it keeps warm. They inherit `GODEL_SERVER` and the hooks from the
-session that started the daemon, and they are not the task's session (not in
-godel's terminal, so godel can't drive them or look at their processes). A
-hook whose `CLAUDE_CODE_SESSION_KIND` is `bg` is one of them, and
-`bin/godel-hook` drops it. Without that, the spare's `SessionStart` (the
-router's model, since it has no `--model`) was taken for the task's and the
-real session was stopped as a model mismatch.
+Only sessions running under godel's Emacs report. Claude can also run a
+session in its background daemon: `/background`, `claude --bg`, or ← on an
+empty prompt (Claude Code's "← opens agents" setting, on by default). A
+session that moves there continues as a fork in the daemon, and the daemon
+keeps a warm spare; both run in the task's worktree with godel's hooks and
+`GODEL_SERVER`. They are not the task's session: godel can't drive them or
+look at their processes. Found by `cwd` and taken for it, the fork's or the
+spare's `SessionStart` replaced the task's session ID and transcript with ones
+that have no conversation, so the task couldn't be resumed ("session didn't
+start"), and the spare's model (the router's, since it has no `--model`)
+stopped the real session as a model mismatch.
+
+So `bin/godel-hook` sends the PIDs above it, parent first, read while the hook
+runs (by the time Emacs handles a `SessionEnd`, the session may be gone), and
+`godel-status-event` ignores an event unless this Emacs is among them
+(`godel-status-from-this-emacs-p`). No PIDs (no `/proc`) counts as this Emacs.
+An earlier check in the hook for `CLAUDE_CODE_SESSION_KIND=bg` never fired:
+daemon processes are started with it (`/proc/PID/environ` shows it), but
+Claude doesn't pass it on to hooks.
+
+With `evil-ghostel`, entering insert state with point left of the prompt's
+cursor sends ←, which moved sessions to the daemon without anyone noticing.
+Turn "← opens agents" off (`"leftArrowOpensAgents": false` in
+`~/.claude.json`): after a move the conversation carries on in the daemon's
+copy, which godel ignores, so the board stops updating and resuming the task
+picks up from before the move.
 
 | Hook | Task state and data used |
 |---|---|

@@ -5,7 +5,8 @@
 ;; (godel-status-event EVENT BASE64-JSON) through emacsclient.  This file
 ;; turns those events into task states (PLAN.md, "Status from hooks").
 ;; The task is found by its session ID (godel chooses it at launch), falling
-;; back to the working directory.
+;; back to the working directory.  Only events from sessions running under
+;; this Emacs count (`godel-status-from-this-emacs-p').
 
 ;;; Code:
 
@@ -46,18 +47,42 @@ stop a session that started on the wrong model.")
         (format "%s(%s)" tool (godel-status--truncate detail 60))
       tool)))
 
+(defun godel-status-from-this-emacs-p (ancestors)
+  "Non-nil if a hook with ANCESTORS ran in a session under this Emacs.
+ANCESTORS is the PIDs above the hook, parent first, as a space-separated
+string; bin/godel-hook reads them while the hook runs, when every process
+in the chain is still alive.
+
+godel starts its sessions in terminals inside this Emacs, so this Emacs is
+among their hooks' ancestors.  Sessions in Claude's background daemon are
+not under it.  Claude starts them in the task's worktree when a session
+moves to the background (`/background', or ← on an empty prompt), and they
+have godel's hooks and GODEL_SERVER, but nothing in their hooks' environment
+says where they run.  Taken for the task's own session, their SessionStart
+replaced the task's session ID with one that has no conversation (so
+resuming failed), and the spare's model stopped the real session as a
+mismatch.
+
+nil or an empty string (no /proc to read) counts as yes."
+  (let ((pids (and ancestors (split-string ancestors "[ \t]+" t))))
+    (or (null pids)
+        (member (number-to-string (emacs-pid)) pids))))
+
 ;;;###autoload
-(defun godel-status-event (event payload)
+(defun godel-status-event (event payload &optional ancestors)
   "Handle hook EVENT (a string) with base64-encoded JSON PAYLOAD.
-Called by bin/godel-hook through emacsclient.  Never signals: a failing
-hook must not disturb the session."
+Called by bin/godel-hook through emacsclient.  ANCESTORS is the PIDs above
+the hook; an event from a session that doesn't run under this Emacs is
+ignored (`godel-status-from-this-emacs-p').  Never signals: a failing hook
+must not disturb the session."
   (condition-case err
-      (let* ((data (godel-status--decode payload))
-             (task (or (godel-task-by-session (alist-get 'session_id data))
-                       (and (alist-get 'cwd data)
-                            (godel-task-by-directory (alist-get 'cwd data))))))
-        (when task
-          (godel-status-handle (plist-get task :id) event data)))
+      (when (godel-status-from-this-emacs-p ancestors)
+        (let* ((data (godel-status--decode payload))
+               (task (or (godel-task-by-session (alist-get 'session_id data))
+                         (and (alist-get 'cwd data)
+                              (godel-task-by-directory (alist-get 'cwd data))))))
+          (when task
+            (godel-status-handle (plist-get task :id) event data))))
     (error (message "godel: error handling %s hook: %s" event (error-message-string err))))
   nil)
 

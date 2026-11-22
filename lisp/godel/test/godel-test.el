@@ -394,43 +394,87 @@ already has its --model in the launch args, which must not be doubled."
       (should (equal oks '(t)))
       (should (plist-get (godel-task-get (plist-get task :id)) :model-check-pending)))))
 
-(ert-deftest godel-test-hook-ignores-background-sessions ()
-  "A session in Claude's background daemon doesn't report to godel.
-When a session moves to the background, Claude starts two more in the task's
-worktree (the moved session's fork, and a spare).  They inherit GODEL_SERVER
-and the hooks, so godel took the spare's model for the task's, reported
-\"started on notdiamond[1m], expected claude-opus-5-5\" and stopped the real
-session.  Only the hook can tell them apart: it finds the task by cwd."
+(ert-deftest godel-test-hook-sends-ancestors ()
+  "bin/godel-hook passes the PIDs above it, parent first, to Emacs.
+Run from this Emacs, the hook's parent is this Emacs, so the event counts."
   (godel-test-with-env
     (let* ((bin (expand-file-name "bin" tmp))
            (calls (expand-file-name "calls" tmp))
            (client (expand-file-name "emacsclient" bin)))
       (make-directory bin t)
       (with-temp-file client
-        (insert "#!/bin/sh\necho \"$@\" >> " calls "\n"))
+        (insert "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> " calls "\n"))
       (set-file-modes client #o755)
-      (cl-flet ((run (&optional kind)
+      (cl-flet ((run (&optional server)
                   (let ((process-environment
-                         (append (and kind (list (concat "CLAUDE_CODE_SESSION_KIND=" kind)))
-                                 (list (concat "PATH=" bin ":" (getenv "PATH"))
-                                       "GODEL_SERVER=/nonexistent")
-                                 (cl-remove-if (lambda (e)
-                                                 (string-match-p "\\`\\(CLAUDE_CODE_SESSION_KIND\\|PATH\\|GODEL_SERVER\\)=" e))
+                         (append (list (concat "PATH=" bin ":" (getenv "PATH")))
+                                 (and server (list (concat "GODEL_SERVER=" server)))
+                                 (cl-remove-if (lambda (e) (string-match-p "\\`\\(PATH\\|GODEL_SERVER\\)=" e))
                                                process-environment))))
                     (with-temp-buffer
                       (insert "{}")
                       (call-process-region (point-min) (point-max) godel-hook-program
                                            nil nil nil "SessionStart")))))
-        ;; A session in godel's terminal reports.
+        ;; Not a godel session: nothing is sent.
         (run)
-        (should (file-exists-p calls))
-        (delete-file calls)
-        (run "interactive")
-        (should (file-exists-p calls))
-        (delete-file calls)
-        ;; One in the daemon doesn't.
-        (run "bg")
-        (should-not (file-exists-p calls))))))
+        (should-not (file-exists-p calls))
+        (run "/nonexistent")
+        (let* ((form (car (last (split-string (with-temp-buffer (insert-file-contents calls)
+                                                                (buffer-string))
+                                              "\n" t))))
+               (args (cdr (read form)))
+               (ancestors (nth 2 args)))
+          (should (equal (car args) "SessionStart"))
+          (should (equal (car (split-string ancestors)) (number-to-string (emacs-pid))))
+          (should (godel-status-from-this-emacs-p ancestors)))))))
+
+(ert-deftest godel-test-status-ignores-sessions-outside-emacs ()
+  "Events from a session that doesn't run under this Emacs are ignored.
+When a session moves to Claude's background daemon (`/background', or ← on an
+empty prompt), Claude starts more sessions in the task's worktree: a fork of
+the session and a spare.  They have godel's hooks and are found by cwd.
+Their SessionStart replaced the task's session ID with one that has no
+conversation, so the task couldn't be resumed, and the spare's model stopped
+the real session as a mismatch."
+  (godel-test-with-env
+    (let* ((repo (godel-test-repo (expand-file-name "repo" tmp)))
+           (task (godel-task-create :title "t" :repo repo :base "main" :session-id "s6"
+                                    :expect-model "claude-opus-5-5"))
+           (id (plist-get task :id))
+           (wt (plist-get task :worktree))
+           (daemon "4321 4320 4300 1")
+           (here (format "4321 %d 1" (emacs-pid)))
+           (started nil))
+      (add-hook 'godel-status-session-start-functions (lambda (_ ok) (push ok started)))
+      (godel-task-update id :state 'idle)
+      ;; The daemon's spare: other ID, same worktree, the router's model.
+      (godel-status-event "SessionStart"
+                          (godel-test-payload `((session_id . "spare") (cwd . ,wt)
+                                                (model . "notdiamond[1m]")
+                                                (transcript_path . "/tmp/spare.jsonl")))
+                          daemon)
+      (godel-status-event "SessionEnd"
+                          (godel-test-payload `((session_id . "spare") (cwd . ,wt) (reason . "other")))
+                          daemon)
+      (should (equal started nil))
+      (should (equal (plist-get (godel-task-get id) :session-id) "s6"))
+      (should (eq (plist-get (godel-task-get id) :state) 'idle))
+      ;; The same events from under this Emacs count, found by cwd as before
+      ;; (e.g. a new session ID after /clear in godel's terminal).
+      (godel-status-event "SessionStart"
+                          (godel-test-payload `((session_id . "s7") (cwd . ,wt)
+                                                (model . "claude-opus-5-5")
+                                                (transcript_path . "/tmp/s7.jsonl")))
+                          here)
+      (should (equal started '(t)))
+      (should (equal (plist-get (godel-task-get id) :session-id) "s7"))
+      (godel-status-event "SessionEnd"
+                          (godel-test-payload '((session_id . "s7") (reason . "exit")))
+                          here)
+      (should (eq (plist-get (godel-task-get id) :state) 'stopped))
+      ;; No ancestors (no /proc to read) counts as this Emacs.
+      (should (godel-status-from-this-emacs-p nil))
+      (should (godel-status-from-this-emacs-p "")))))
 
 (ert-deftest godel-test-check-launch ()
   (let ((wrapper '(("node" "notdiamond" "claude") . ("PATH=/bin")))

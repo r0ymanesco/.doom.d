@@ -552,6 +552,18 @@ startup if Emacs has them). Not Diamond tasks are unaffected.
 **A task is "stopped" after restarting Emacs.** Expected: sessions run inside
 Emacs. Open the task (`RET`) to resume it.
 
+**The board stops updating while you keep working in a task's session, or
+resuming it loses the latest part of the conversation.** The session has
+probably moved to Claude's background daemon. Claude Code's "← opens agents"
+setting moves a session there when ← is pressed on an empty prompt, and
+evil-ghostel sends ← when you enter insert state with point left of the
+prompt. Turn it off in `/config` ("← opens agents"), or set
+`"leftArrowOpensAgents": false` in `~/.claude.json`. godel ignores sessions in
+the daemon, so the task stays tied to its own conversation, but what was said
+after the move is only in the background copy (`claude agents` lists it). To
+run an agent in the background on purpose, start a separate one
+(`claude --bg`) rather than using `/background` on the task's session.
+
 **"error in process filter: … -32601, Method not found" in `*Messages*`,**
 and the walkthrough's tools take a few seconds to connect. This comes from
 claude-code-ide's Emacs tools server, not godel, and is harmless.
